@@ -73,7 +73,7 @@
  * 3. RS-485 UART driver ring buffer
  * ═══════════════════════════════════════════════════════════════════ */
 #ifndef UART_RX_RING_BUF_SIZE
-    #define UART_RX_RING_BUF_SIZE           1024    /* Bytes. */
+    #define UART_RX_RING_BUF_SIZE           2048    /* Bytes. */
 #endif
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -110,14 +110,16 @@
 
 /* ═══════════════════════════════════════════════════════════════════
  * 7. AIS decoder
- *    s_list_buf  = 8192 bytes (aisdecoder_ui.c)
- *    s_targets   = 64 x ~92 = ~5888 bytes (aisdecoder_decode.c)
+ *    s_list_buf       = 16384 bytes (aisdecoder_ui.c)
+ *    s_targets        = 256 x sizeof(aisdecoder_target_t) (aisdecoder_decode.c)
+ *    s_render_targets = 256 x sizeof(aisdecoder_target_t) (aisdecoder_ui.c)
+ *    The render snapshot stays out of the 6 KB LVGL task stack.
  * ═══════════════════════════════════════════════════════════════════ */
 #ifndef AIS_LIST_BUF_IN_PSRAM
-    #define AIS_LIST_BUF_IN_PSRAM           true    /* s_list_buf: 8K UI data, not latency-critical. */
+    #define AIS_LIST_BUF_IN_PSRAM           true    /* s_list_buf: 16K UI data, not latency-critical. */
 #endif
 #ifndef AIS_TARGETS_IN_PSRAM
-    #define AIS_TARGETS_IN_PSRAM            true    /* s_targets ~6K */
+    #define AIS_TARGETS_IN_PSRAM            true    /* Both target tables live in PSRAM. */
 #endif
 
 /* ═══════════════════════════════════════════════════════════════════

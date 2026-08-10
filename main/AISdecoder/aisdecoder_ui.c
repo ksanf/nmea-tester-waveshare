@@ -24,7 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LV_FONT_DECLARE(lv_font_unscii_8)
+LV_FONT_DECLARE(lv_font_nmea_unscii_16)
 
 #define AISDEC_BACK_W               52
 #define AISDEC_BACK_H               28
@@ -35,7 +35,8 @@ LV_FONT_DECLARE(lv_font_unscii_8)
 #define AISDEC_MARGIN               8
 #define AISDEC_LIST_Y               (AISDEC_TICKER_Y + AISDEC_TICKER_H + 6)
 #define AISDEC_LINE_Q_LEN           16
-#define AISDEC_TEXT_BUFSZ          8192
+#define AISDEC_TEXT_BUFSZ           (16U * 1024U)
+#define AISDEC_REFRESH_MS          500U
 
 typedef struct {
     char line[AISDEC_MAX_LINE];
@@ -51,19 +52,34 @@ static QueueHandle_t s_line_q = NULL;
 static uint32_t s_ais_lines_seen = 0;
 static char s_last_line[AISDEC_MAX_LINE];
 static char *s_list_buf = NULL;
+static aisdecoder_target_t *s_render_targets = NULL;
 static lv_obj_t *s_scr_prev = NULL;
 static uint32_t s_theme_rev = 0;
 static const char *TAG = "aisdec_ui";
 
-static bool list_buf_alloc_(void)
+static bool ui_buffers_alloc_(void)
 {
-    if (s_list_buf) return true;
-    s_list_buf = CALLOC_WHERE(AIS_LIST_BUF_IN_PSRAM, 1, AISDEC_TEXT_BUFSZ);
-    return s_list_buf != NULL;
+    if (!s_list_buf) {
+        s_list_buf = CALLOC_WHERE(AIS_LIST_BUF_IN_PSRAM, 1, AISDEC_TEXT_BUFSZ);
+    }
+    if (!s_render_targets) {
+        s_render_targets = CALLOC_WHERE(AIS_TARGETS_IN_PSRAM,
+                                        AISDEC_MAX_TARGETS,
+                                        sizeof(*s_render_targets));
+    }
+    if (s_list_buf && s_render_targets) return true;
+
+    free(s_render_targets);
+    s_render_targets = NULL;
+    free(s_list_buf);
+    s_list_buf = NULL;
+    return false;
 }
 
-static void list_buf_free_(void)
+static void ui_buffers_free_(void)
 {
+    free(s_render_targets);
+    s_render_targets = NULL;
     free(s_list_buf);
     s_list_buf = NULL;
 }
@@ -132,18 +148,17 @@ static void format_lon_(float lon, char *dst, size_t dst_sz)
 
 static void render_target_list_(void)
 {
-    aisdecoder_target_t targets[AISDEC_MAX_TARGETS];
     uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     size_t count;
     lv_coord_t scroll_x = 0;
     lv_coord_t scroll_y = 0;
     size_t len = 0;
 
-    if (!page_list || !lbl_list || !s_list_buf) return;
+    if (!page_list || !lbl_list || !s_list_buf || !s_render_targets) return;
 
     scroll_x = lv_obj_get_scroll_x(page_list);
     scroll_y = lv_obj_get_scroll_y(page_list);
-    count = aisdecoder_decode_collect(targets, AISDEC_MAX_TARGETS, now_ms);
+    count = aisdecoder_decode_collect(s_render_targets, AISDEC_MAX_TARGETS, now_ms);
 
     ESP_LOGI(TAG, "render targets: count=%u ais_lines=%lu last=%s",
              (unsigned)count, (unsigned long)s_ais_lines_seen,
@@ -157,16 +172,17 @@ static void render_target_list_(void)
         for (size_t i = 0; i < count && i < AISDEC_MAX_TARGETS; i++) {
             char lat[16];
             char lon[16];
-            const char *name = targets[i].name[0] ? targets[i].name : "--";
-            const char *call = targets[i].call[0] ? targets[i].call : "--";
+            const char *name = s_render_targets[i].name[0] ? s_render_targets[i].name : "--";
+            const char *call = s_render_targets[i].call[0] ? s_render_targets[i].call : "--";
 
-            format_lat_(targets[i].lat, lat, sizeof(lat));
-            format_lon_(targets[i].lon, lon, sizeof(lon));
+            format_lat_(s_render_targets[i].lat, lat, sizeof(lat));
+            format_lon_(s_render_targets[i].lon, lon, sizeof(lon));
 
             len += snprintf(s_list_buf + len, AISDEC_TEXT_BUFSZ - len,
                             "%-10.10s %-7.7s %09" PRIu32 " %-7.7s %-8.8s %4.1f %4.0f %3u%s",
-                            name, call, targets[i].mmsi, lat, lon,
-                            targets[i].sog, targets[i].cog, targets[i].heading,
+                            name, call, s_render_targets[i].mmsi, lat, lon,
+                            s_render_targets[i].sog, s_render_targets[i].cog,
+                            s_render_targets[i].heading,
                             (i + 1 < count) ? "\n" : "");
             if (len >= AISDEC_TEXT_BUFSZ) {
                 len = AISDEC_TEXT_BUFSZ - 1;
@@ -233,7 +249,7 @@ static void scr_delete_cb_(lv_event_t *e)
     }
     scr_ais = NULL;
     s_scr_prev = NULL;
-    list_buf_free_();
+    ui_buffers_free_();
     aisdecoder_decode_deinit();
     if (s_line_q) {
         vQueueDelete(s_line_q);
@@ -264,7 +280,7 @@ static void destroy_(void)
         lv_scr_load(screen_ui_get_main());
     }
     aisdecoder_decode_deinit();
-    list_buf_free_();
+    ui_buffers_free_();
     lbl_ticker = NULL;
     lbl_header = NULL;
     page_list = NULL;
@@ -300,9 +316,9 @@ lv_obj_t *aisdecoder_create(lv_obj_t *parent)
     }
 
     s_scr_prev = parent;
-    list_buf_free_();
-    if (!list_buf_alloc_()) {
-        ESP_LOGE(TAG, "list buffer alloc failed");
+    ui_buffers_free_();
+    if (!ui_buffers_alloc_()) {
+        ESP_LOGE(TAG, "UI buffer alloc failed");
         return parent;
     }
     telnet_router_set_active(TELNET_ROUTE_NONE);
@@ -347,10 +363,10 @@ lv_obj_t *aisdecoder_create(lv_obj_t *parent)
                              card_hex, card_hex, border_hex);
 
     header_y = 0;
-    header_h = 14;
+    header_h = 18;
     lbl_header = lv_label_create(list_card);
     lv_label_set_text(lbl_header, "SHIP       CALL    MMSI      LAT     LON      SOG   COG HDT");
-    lv_obj_set_style_text_font(lbl_header, &lv_font_unscii_8, 0);
+    lv_obj_set_style_text_font(lbl_header, &lv_font_nmea_unscii_16, 0);
     lv_obj_set_style_text_color(lbl_header, lv_color_hex(ui_theme_get()->muted), 0);
     lv_obj_set_pos(lbl_header, 0, header_y);
 
@@ -370,7 +386,8 @@ lv_obj_t *aisdecoder_create(lv_obj_t *parent)
     lbl_list = lv_label_create(page_list);
     lv_label_set_long_mode(lbl_list, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(lbl_list, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(lbl_list, &lv_font_unscii_8, 0);
+    lv_obj_set_style_text_font(lbl_list, &lv_font_nmea_unscii_16, 0);
+    lv_obj_set_style_text_line_space(lbl_list, 2, 0);
     lv_obj_set_style_text_color(lbl_list, lv_color_hex(AISDEC_COLOR_LIST_TEXT), 0);
     lv_label_set_text(lbl_list, "-- waiting for AIS decode --");
 
@@ -382,7 +399,7 @@ lv_obj_t *aisdecoder_create(lv_obj_t *parent)
         destroy_();
         return parent;
     }
-    tmr_drain = lv_timer_create(drain_timer_cb_, 100, NULL);
+    tmr_drain = lv_timer_create(drain_timer_cb_, AISDEC_REFRESH_MS, NULL);
     if (!tmr_drain) {
         ESP_LOGE(TAG, "drain timer alloc failed");
         destroy_();

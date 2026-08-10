@@ -11,7 +11,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#define AISDEC_MAX_TARGETS          64
+#define AISDEC_MAX_TARGETS         256
 #define AISDEC_MAX_LINE             192
 #define AISDEC_STALE_MS             600000U
 #define AISDEC_FRAG_TIMEOUT_MS      5000U

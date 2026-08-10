@@ -637,7 +637,7 @@ static void cb_btn_ais(lv_event_t *e)
 {
     (void)e;
     if (!scr_rx) return;
-    lv_scr_load(aisdecoder_create(scr_rx));
+    (void)aisdecoder_create(scr_rx);
 }
 
 static void update_ais_button_(void)
