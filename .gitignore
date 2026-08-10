@@ -1,0 +1,60 @@
+# ESP-IDF build output
+build/
+build_*/
+
+# Local ESP-IDF configuration generated from sdkconfig.defaults
+/sdkconfig
+/sdkconfig.old
+
+# ESP-IDF managed components are restored from idf_component.yml + dependencies.lock
+managed_components/
+
+# Generated binaries and linker outputs
+*.bin
+*.elf
+*.map
+*.hex
+
+# C/C++ build intermediates
+*.d
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.dylib
+
+# Local IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local logs, captures, and imported bundles
+debug_log/
+captures/
+*.log
+*.bundle
+build_log.txt
+
+# Python/cache noise
+__pycache__/
+.pytest_cache/
+.cache/
+venv/
+.env
+.env/
+
+# Local credentials and signing material
+*.pem
+*.key
+*.p12
+*.pfx
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+project_description.json
+flash_project_args
