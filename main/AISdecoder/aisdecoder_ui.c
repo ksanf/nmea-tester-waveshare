@@ -35,7 +35,7 @@ LV_FONT_DECLARE(lv_font_nmea_unscii_16)
 #define AISDEC_MARGIN               8
 #define AISDEC_LIST_Y               (AISDEC_TICKER_Y + AISDEC_TICKER_H + 6)
 #define AISDEC_LINE_Q_LEN           16
-#define AISDEC_TEXT_BUFSZ           (16U * 1024U)
+#define AISDEC_TEXT_BUFSZ           (20U * 1024U)
 #define AISDEC_REFRESH_MS          500U
 
 typedef struct {
@@ -179,8 +179,8 @@ static void render_target_list_(void)
             format_lon_(s_render_targets[i].lon, lon, sizeof(lon));
 
             len += snprintf(s_list_buf + len, AISDEC_TEXT_BUFSZ - len,
-                            "%-10.10s %-7.7s %09" PRIu32 " %-7.7s %-8.8s %4.1f %4.0f %3u%s",
-                            name, call, s_render_targets[i].mmsi, lat, lon,
+                            "%3u %-10.10s %-7.7s %09" PRIu32 " %-7.7s %-8.8s %4.1f %4.0f %3u%s",
+                            (unsigned)(i + 1), name, call, s_render_targets[i].mmsi, lat, lon,
                             s_render_targets[i].sog, s_render_targets[i].cog,
                             s_render_targets[i].heading,
                             (i + 1 < count) ? "\n" : "");
@@ -365,7 +365,7 @@ lv_obj_t *aisdecoder_create(lv_obj_t *parent)
     header_y = 0;
     header_h = 18;
     lbl_header = lv_label_create(list_card);
-    lv_label_set_text(lbl_header, "SHIP       CALL    MMSI      LAT     LON      SOG   COG HDT");
+    lv_label_set_text(lbl_header, "  # SHIP       CALL    MMSI      LAT     LON      SOG   COG HDT");
     lv_obj_set_style_text_font(lbl_header, &lv_font_nmea_unscii_16, 0);
     lv_obj_set_style_text_color(lbl_header, lv_color_hex(ui_theme_get()->muted), 0);
     lv_obj_set_pos(lbl_header, 0, header_y);

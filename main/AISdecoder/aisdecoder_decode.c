@@ -11,11 +11,13 @@
 #include "config_logs.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
 static aisdecoder_target_t *s_targets = NULL;
+static uint32_t s_decoded_updates = 0;
 static const char *TAG = "aisdec_decode";
 
 static bool targets_alloc_(void)
@@ -29,6 +31,7 @@ void aisdecoder_decode_deinit(void)
 {
     free(s_targets);
     s_targets = NULL;
+    s_decoded_updates = 0;
 }
 
 static int ais6_to_val_(char c)
@@ -150,6 +153,20 @@ static void decode_type_18_(const char *payload, aisdecoder_target_t *t)
     decode_position_common_(t, payload, 46, 57, 85, 112, 124);
 }
 
+static void decode_type_9_(const char *payload, aisdecoder_target_t *t)
+{
+    int32_t raw_lon = ais_get_sbit_(payload, 61, 28);
+    int32_t raw_lat = ais_get_sbit_(payload, 89, 27);
+    uint32_t raw_sog = ais_get_ubit_(payload, 50, 10);
+    uint32_t raw_cog = ais_get_ubit_(payload, 116, 12);
+
+    t->sog = (raw_sog >= 1023U) ? 0.0f : (float)raw_sog;
+    t->cog = (raw_cog >= 3600U) ? 0.0f : ((float)raw_cog / 10.0f);
+    t->lon = (raw_lon == 0x06791AC0) ? 999.0f : ((float)raw_lon / 600000.0f);
+    t->lat = (raw_lat == 0x03412140) ? 999.0f : ((float)raw_lat / 600000.0f);
+    if (!t->name[0]) strlcpy(t->name, "SAR AIR", sizeof(t->name));
+}
+
 static void decode_type_19_(const char *payload, aisdecoder_target_t *t)
 {
     decode_position_common_(t, payload, 46, 57, 85, 112, 124);
@@ -172,6 +189,47 @@ static void decode_type_24_(const char *payload, aisdecoder_target_t *t)
     }
 }
 
+static void decode_type_21_(const char *payload, aisdecoder_target_t *t)
+{
+    int32_t raw_lon = ais_get_sbit_(payload, 164, 28);
+    int32_t raw_lat = ais_get_sbit_(payload, 192, 27);
+
+    ais_get_text_(payload, 43, 20, t->name, sizeof(t->name));
+    if (!t->name[0]) strlcpy(t->name, "AtoN", sizeof(t->name));
+    t->lon = (raw_lon == 0x06791AC0) ? 999.0f : ((float)raw_lon / 600000.0f);
+    t->lat = (raw_lat == 0x03412140) ? 999.0f : ((float)raw_lat / 600000.0f);
+    t->sog = 0.0f;
+    t->cog = 0.0f;
+    t->heading = 0U;
+}
+
+static void decode_type_27_(const char *payload, aisdecoder_target_t *t)
+{
+    int32_t raw_lon = ais_get_sbit_(payload, 44, 18);
+    int32_t raw_lat = ais_get_sbit_(payload, 62, 17);
+    uint32_t raw_sog = ais_get_ubit_(payload, 79, 6);
+    uint32_t raw_cog = ais_get_ubit_(payload, 85, 9);
+
+    t->nav_status = (uint8_t)ais_get_ubit_(payload, 40, 4);
+    t->lon = (raw_lon == 108600) ? 999.0f : ((float)raw_lon / 600.0f);
+    t->lat = (raw_lat == 54600) ? 999.0f : ((float)raw_lat / 600.0f);
+    t->sog = (raw_sog >= 63U) ? 0.0f : (float)raw_sog;
+    t->cog = (raw_cog >= 360U) ? 0.0f : (float)raw_cog;
+}
+
+static void decode_type_28_(const char *payload, aisdecoder_target_t *t)
+{
+    int32_t raw_lon = ais_get_sbit_(payload, 44, 28);
+    int32_t raw_lat = ais_get_sbit_(payload, 72, 27);
+
+    if (!t->name[0]) strlcpy(t->name, "AtoN", sizeof(t->name));
+    t->lon = (raw_lon == 0x06791AC0) ? 999.0f : ((float)raw_lon / 600000.0f);
+    t->lat = (raw_lat == 0x03412140) ? 999.0f : ((float)raw_lat / 600000.0f);
+    t->sog = 0.0f;
+    t->cog = 0.0f;
+    t->heading = 0U;
+}
+
 void aisdecoder_decode_reset(void)
 {
     if (!targets_alloc_()) {
@@ -179,6 +237,7 @@ void aisdecoder_decode_reset(void)
         return;
     }
     memset(s_targets, 0, sizeof(*s_targets) * AISDEC_MAX_TARGETS);
+    s_decoded_updates = 0;
 }
 
 void aisdecoder_decode_feed_payload(const char *payload)
@@ -202,7 +261,9 @@ void aisdecoder_decode_feed_payload(const char *payload)
     case 1:
     case 2:
     case 3:
+    case 9:
     case 18:
+    case 28:
         if (!payload_has_bits_(payload, 168u)) return;
         break;
     case 5:
@@ -210,6 +271,9 @@ void aisdecoder_decode_feed_payload(const char *payload)
         break;
     case 19:
         if (!payload_has_bits_(payload, 312u)) return;
+        break;
+    case 21:
+        if (!payload_has_bits_(payload, 272u)) return;
         break;
     case 24: {
         if (!payload_has_bits_(payload, 40u)) return;
@@ -220,8 +284,12 @@ void aisdecoder_decode_feed_payload(const char *payload)
         }
         break;
     }
-    default:
+    case 27:
+        if (!payload_has_bits_(payload, 96u)) return;
         break;
+    default:
+        ESP_LOGI(TAG, "payload unsupported: type=%" PRIu32, type);
+        return;
     }
     mmsi = ais_get_ubit_(payload, 8, 30);
     if (mmsi == 0U) {
@@ -246,18 +314,39 @@ void aisdecoder_decode_feed_payload(const char *payload)
     case 2:
     case 3:
         decode_type_123_(payload, t);
+        s_decoded_updates++;
         break;
     case 5:
         decode_type_5_(payload, t);
+        s_decoded_updates++;
+        break;
+    case 9:
+        decode_type_9_(payload, t);
+        s_decoded_updates++;
         break;
     case 18:
         decode_type_18_(payload, t);
+        s_decoded_updates++;
         break;
     case 19:
         decode_type_19_(payload, t);
+        s_decoded_updates++;
+        break;
+    case 21:
+        decode_type_21_(payload, t);
+        s_decoded_updates++;
         break;
     case 24:
         decode_type_24_(payload, t);
+        s_decoded_updates++;
+        break;
+    case 27:
+        decode_type_27_(payload, t);
+        s_decoded_updates++;
+        break;
+    case 28:
+        decode_type_28_(payload, t);
+        s_decoded_updates++;
         break;
     default:
         ESP_LOGI(TAG, "payload unsupported: type=%" PRIu32 " mmsi=%" PRIu32, type, mmsi);
@@ -281,4 +370,9 @@ size_t aisdecoder_decode_collect(aisdecoder_target_t *out, size_t max_targets, u
         out[count++] = s_targets[i];
     }
     return count;
+}
+
+uint32_t aisdecoder_decode_updates(void)
+{
+    return s_decoded_updates;
 }

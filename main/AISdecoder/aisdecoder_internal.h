@@ -38,3 +38,4 @@ void aisdecoder_decode_reset(void);
 void aisdecoder_decode_deinit(void);
 void aisdecoder_decode_feed_payload(const char *payload);
 size_t aisdecoder_decode_collect(aisdecoder_target_t *out, size_t max_targets, uint32_t now_ms);
+uint32_t aisdecoder_decode_updates(void);
