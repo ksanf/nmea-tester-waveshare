@@ -198,13 +198,6 @@ git clone https://github.com/ksanf/nmea-tester-waveshare.git
 cd nmea-tester-waveshare
 ```
 
-Alternatively, GitHub users who already have their own SSH key configured can clone over SSH:
-
-```sh
-git clone git@github.com:ksanf/nmea-tester-waveshare.git
-cd nmea-tester-waveshare
-```
-
 ## Build, flash, and monitor
 
 Open a shell in the repository and activate ESP-IDF:
