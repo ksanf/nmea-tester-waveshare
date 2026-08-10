@@ -194,14 +194,14 @@ Node.js and npm are not required.
 Clone the repository and enter it:
 
 ```sh
-git clone git@github.com:ksanf/nmea-tester-waveshare.git
+git clone https://github.com/ksanf/nmea-tester-waveshare.git
 cd nmea-tester-waveshare
 ```
 
-If SSH keys are not configured on your computer, use HTTPS instead:
+Alternatively, GitHub users who already have their own SSH key configured can clone over SSH:
 
 ```sh
-git clone https://github.com/ksanf/nmea-tester-waveshare.git
+git clone git@github.com:ksanf/nmea-tester-waveshare.git
 cd nmea-tester-waveshare
 ```
 
