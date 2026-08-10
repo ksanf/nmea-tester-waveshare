@@ -189,6 +189,22 @@ Pinned managed components include:
 
 Node.js and npm are not required.
 
+## Get the source
+
+Clone the repository and enter it:
+
+```sh
+git clone git@github.com:ksanf/nmea-tester-waveshare.git
+cd nmea-tester-waveshare
+```
+
+If SSH keys are not configured on your computer, use HTTPS instead:
+
+```sh
+git clone https://github.com/ksanf/nmea-tester-waveshare.git
+cd nmea-tester-waveshare
+```
+
 ## Build, flash, and monitor
 
 Open a shell in the repository and activate ESP-IDF:
