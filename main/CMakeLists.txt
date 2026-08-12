@@ -5,6 +5,7 @@ idf_component_register(
 
         # Local Waveshare LVGL port
         lvgl_port/waveshare_lvgl_port.c
+        lvgl_port/framebuffer_rotate.c
 
         # UI screens
         ui/screens/screen_init.c

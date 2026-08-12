@@ -56,9 +56,13 @@
     #define LVGL_BB_MODE                    0
 
 #elif LVGL_PORT_MODE == 2
-    /* ── Mode 2: double framebuffer, direct mode, anti-tearing ── */
+    /* ── Mode 2: direct mode with anti-tearing ────────────────── */
     #undef  LCD_RGB_FB_COUNT
-    #define LCD_RGB_FB_COUNT                2
+    #if LCD_RUNTIME_ROTATION_180
+        #define LCD_RGB_FB_COUNT            3
+    #else
+        #define LCD_RGB_FB_COUNT            2
+    #endif
     #define LVGL_DIRECT_MODE                1
     #define LVGL_FULL_REFRESH               0
     #define LVGL_DOUBLE_BUFFER              0

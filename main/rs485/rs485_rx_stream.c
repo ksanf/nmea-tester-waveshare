@@ -9,9 +9,14 @@
 
 #include <string.h>
 
-static bool nmea_char_(uint8_t byte)
+static bool nmea_start_char_(uint8_t byte)
 {
     return byte >= 0x21u && byte <= 0x7Eu;
+}
+
+static bool nmea_char_(uint8_t byte)
+{
+    return byte >= 0x20u && byte <= 0x7Eu;
 }
 
 static void emit_nmea_(rs485_rx_stream_t *stream,
@@ -75,7 +80,7 @@ void rs485_rx_stream_feed(rs485_rx_stream_t *stream,
 
         consume_hex_(stream, byte, emit, user);
 
-        if (stream->nmea_len == 0 && !nmea_char_(byte)) {
+        if (stream->nmea_len == 0 && !nmea_start_char_(byte)) {
             continue;
         }
 

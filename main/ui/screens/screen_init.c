@@ -10,6 +10,7 @@
 #include "config/config_nmea_tester.h"
 #include "config/lvgl_config.h"
 #include "system/board_waveshare.h"
+#include "system/nvs_rw.h"
 
 #include "esp_log.h"
 #define CFG_LOG_MODULE LOG_CFG_SCREEN_INIT
@@ -47,8 +48,40 @@
 #define EXAMPLE_LCD_IO_RGB_DE           PIN_LCD_DE
 #define EXAMPLE_LCD_IO_RGB_PCLK         PIN_LCD_PCLK
 #define EXAMPLE_LCD_IO_RGB_DISP         -1
+#define SCREEN_CONFIG_NAMESPACE         "ui"
+#define SCREEN_ROTATION_KEY             "rot180"
 
 static const char *TAG = "SCREEN_INIT";
+static bool s_rotation_180 = false;
+
+static esp_err_t screen_orientation_load_(void)
+{
+    void *handle;
+    uint8_t raw = 0U;
+    esp_err_t err = nvs_rw_open_ro(SCREEN_CONFIG_NAMESPACE, &handle);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        s_rotation_180 = false;
+        return ESP_OK;
+    }
+    if (err != ESP_OK) return err;
+
+    err = nvs_rw_read_u8(handle, SCREEN_ROTATION_KEY, &raw);
+    nvs_rw_close(handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        s_rotation_180 = false;
+        return ESP_OK;
+    }
+    if (err != ESP_OK) return err;
+
+    if (raw > 1U) {
+        ESP_LOGW(TAG, "Invalid stored rotation %u; using normal orientation",
+                 (unsigned)raw);
+        raw = 0U;
+    }
+    s_rotation_180 = raw != 0U;
+    return ESP_OK;
+}
 
 /* ─── VSYNC shim matching the reference demo ─────────────────────── */
 IRAM_ATTR static bool rgb_lcd_on_vsync_event(esp_lcd_panel_handle_t panel,
@@ -73,6 +106,9 @@ void screen_init(void)
 
     ESP_ERROR_CHECK(waveshare_board_init());
     log_meminfo("board_init");
+
+    ESP_ERROR_CHECK(screen_orientation_load_());
+    ESP_ERROR_CHECK(lvgl_port_set_rotation_180(s_rotation_180));
 
     /* ── RGB panel ── */
     esp_lcd_panel_handle_t panel = NULL;
@@ -138,7 +174,34 @@ void screen_init(void)
 
     ESP_ERROR_CHECK(waveshare_lcd_set_backlight(true));
     ESP_LOGI(TAG, "Display ready.");
+    ESP_LOGI(TAG, "Orientation: %s", s_rotation_180 ? "180 degrees" : "normal");
     log_meminfo("DONE");
+}
+
+bool screen_orientation_is_rotated(void)
+{
+    return s_rotation_180;
+}
+
+esp_err_t screen_orientation_set_rotated(bool rotated, bool persist)
+{
+    void *handle;
+    esp_err_t err;
+
+    if (persist) {
+        err = nvs_rw_open_rw(SCREEN_CONFIG_NAMESPACE, &handle);
+        if (err != ESP_OK) return err;
+        err = nvs_rw_write_u8(handle, SCREEN_ROTATION_KEY, rotated ? 1U : 0U);
+        nvs_rw_close(handle);
+        if (err != ESP_OK) return err;
+    }
+
+    err = lvgl_port_set_rotation_180(rotated);
+    if (err != ESP_OK) return err;
+
+    s_rotation_180 = rotated;
+    ESP_LOGI(TAG, "Orientation set to %s", rotated ? "180 degrees" : "normal");
+    return ESP_OK;
 }
 
 lv_disp_t *screen_get_display(void) {

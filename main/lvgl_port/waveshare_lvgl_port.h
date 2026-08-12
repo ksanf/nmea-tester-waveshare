@@ -11,7 +11,9 @@
 /* Keep the Waveshare port and RGB panel on one project-wide configuration. */
 #define CONFIG_EXAMPLE_LVGL_PORT_AVOID_TEAR_ENABLE  LVGL_AVOID_TEARING
 #if LVGL_AVOID_TEARING
-    #if LVGL_DIRECT_MODE && (LCD_RGB_FB_COUNT == 2)
+    #if LVGL_DIRECT_MODE && \
+        ((LCD_RGB_FB_COUNT == 2) || \
+         (LCD_RUNTIME_ROTATION_180 && (LCD_RGB_FB_COUNT == 3)))
         #define CONFIG_EXAMPLE_LVGL_PORT_AVOID_TEAR_MODE 3
     #elif LVGL_FULL_REFRESH && (LCD_RGB_FB_COUNT == 2)
         #define CONFIG_EXAMPLE_LVGL_PORT_AVOID_TEAR_MODE 1
@@ -24,6 +26,7 @@
     #define CONFIG_EXAMPLE_LVGL_PORT_AVOID_TEAR_MODE 0
 #endif
 #define CONFIG_EXAMPLE_LVGL_PORT_ROTATION_DEGREE    0
+#define LVGL_PORT_RUNTIME_ROTATION_180               LCD_RUNTIME_ROTATION_180
 #define CONFIG_EXAMPLE_LVGL_PORT_BUF_PSRAM          LVGL_BUFF_SPIRAM
 #define CONFIG_EXAMPLE_LVGL_PORT_BUF_INTERNAL       (!LVGL_BUFF_SPIRAM)
 #define CONFIG_EXAMPLE_LVGL_PORT_BUF_HEIGHT         LVGL_DRAW_BUFFER_LINES
@@ -34,6 +37,7 @@
 #define CONFIG_EXAMPLE_LVGL_PORT_TASK_PRIORITY      LVGL_TASK_PRIORITY
 #define CONFIG_EXAMPLE_LVGL_PORT_TASK_CORE          LVGL_TASK_CORE
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "config/config_nmea_tester.h"
@@ -107,6 +111,9 @@ extern "C" {
  *
  */
 #define EXAMPLE_LVGL_PORT_ROTATION_DEGREE  (CONFIG_EXAMPLE_LVGL_PORT_ROTATION_DEGREE)
+#define LVGL_PORT_ROTATION_COPY_ENABLE     \
+    ((EXAMPLE_LVGL_PORT_ROTATION_DEGREE != 0) || \
+     (LVGL_PORT_DIRECT_MODE && LVGL_PORT_RUNTIME_ROTATION_180))
 
 /**
  * Below configurations are automatically set according to the above configurations, users do not need to modify them.
@@ -123,7 +130,7 @@ extern "C" {
 #define LVGL_PORT_DIRECT_MODE           (1)
 #endif /* LVGL_PORT_AVOID_TEAR_MODE */
 
-#if EXAMPLE_LVGL_PORT_ROTATION_DEGREE == 0
+#if !LVGL_PORT_ROTATION_COPY_ENABLE
 #define EXAMPLE_LVGL_PORT_ROTATION_0    (1)
 #else
 #if EXAMPLE_LVGL_PORT_ROTATION_DEGREE == 90
@@ -166,6 +173,14 @@ extern "C" {
  *      - Others: Fail
  */
 esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle, esp_lcd_touch_handle_t tp_handle);
+
+/**
+ * @brief Select normal or 180-degree display orientation.
+ *
+ * The caller must hold the LVGL lock after lvgl_port_init() has completed.
+ * LVGL applies the matching pointer-coordinate transform automatically.
+ */
+esp_err_t lvgl_port_set_rotation_180(bool enabled);
 
 /**
  * @brief Take LVGL mutex

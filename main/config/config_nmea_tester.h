@@ -76,6 +76,10 @@
     #error "Unsupported PANEL_PROFILE"
 #endif
 
+/* Keep one logical LVGL framebuffer and two RGB output framebuffers so the
+ * display can switch between 0 and 180 degrees at runtime in direct mode. */
+#define LCD_RUNTIME_ROTATION_180 1
+
 #define LCD_DRAW_LINES 16
 #define RS485_UART_PORT UART_NUM_2
 #define RS485_BAUD_DEFAULT 4800

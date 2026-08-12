@@ -78,7 +78,7 @@ static void test_delimiters_and_multiple_lines_(void)
     rs485_rx_stream_t stream;
     capture_t capture = {0};
     static const uint8_t data[] = {
-        '$', 'G', 'P', 'V', 'T', 'G', ',', '1', ' ',
+        ' ', '$', 'G', 'P', 'V', 'T', 'G', ',', '1', 0x1F,
         '!', 'A', 'I', 'V', 'D', 'M', ',', '2', 0x7F,
     };
 
@@ -86,10 +86,29 @@ static void test_delimiters_and_multiple_lines_(void)
     rs485_rx_stream_feed(&stream, data, sizeof(data), capture_emit_, &capture);
 
     if (capture.count != 2u) fail_("delimiters", "wrong event count");
-    expect_event_("space delimiter", &capture, 0,
+    expect_event_("control delimiter", &capture, 0,
                   RS485_RX_STREAM_EVENT_NMEA, "$GPVTG,1");
     expect_event_("DEL delimiter", &capture, 1,
                   RS485_RX_STREAM_EVENT_NMEA, "!AIVDM,2");
+}
+
+static void test_text_fields_keep_spaces_(void)
+{
+    rs485_rx_stream_t stream;
+    capture_t capture = {0};
+    static const uint8_t data[] =
+        "$AIALR,012026,025,A,V,AIS: External lost*24\r"
+        "$AITXT,01,01,07,AIS: lost*38\n";
+
+    rs485_rx_stream_init(&stream, false);
+    rs485_rx_stream_feed(&stream, data, sizeof(data) - 1u,
+                         capture_emit_, &capture);
+
+    if (capture.count != 2u) fail_("text spaces", "wrong event count");
+    expect_event_("ALR spaces", &capture, 0, RS485_RX_STREAM_EVENT_NMEA,
+                  "$AIALR,012026,025,A,V,AIS: External lost*24");
+    expect_event_("TXT spaces", &capture, 1, RS485_RX_STREAM_EVENT_NMEA,
+                  "$AITXT,01,01,07,AIS: lost*38");
 }
 
 static void test_hex_lines_and_offsets_(void)
@@ -168,6 +187,7 @@ int main(void)
 {
     test_fragmented_nmea_();
     test_delimiters_and_multiple_lines_();
+    test_text_fields_keep_spaces_();
     test_hex_lines_and_offsets_();
     test_hex_keeps_nmea_decoder_();
     test_reset_discards_partials_();
