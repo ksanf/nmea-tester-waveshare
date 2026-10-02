@@ -54,7 +54,7 @@ The configuration also retains inactive profiles for earlier 480×320 prototypes
 or validated by this public release.
 
 <p align="center">
-  <img src="docs/images/waveshare-tester.png" alt="NMEA Tester running on a Waveshare ESP32-S3 Touch LCD 5 in its enclosure" width="420">
+  <img src="docs/images/waveshare-tester.png" alt="NMEA Tester running on a Waveshare ESP32-S3 Touch LCD 5 in its enclosure" width="800">
 </p>
 
 *The instrument in its enclosure, displaying generated NMEA sentences on the touchscreen.*
