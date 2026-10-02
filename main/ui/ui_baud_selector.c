@@ -4,6 +4,7 @@
  */
 
 #include "ui/ui_baud_selector.h"
+#include "app/app_controller.h"
 #include "ui/ui_theme.h"
 #include "rs485/rs485_driver.h"
 #include <stdio.h>
@@ -17,25 +18,31 @@ static const uint32_t BAUDS[] = {2400, 4800, 9600, 19200, 38400, 115200};
 /* Font enabled in lv_conf.h. */
 LV_FONT_DECLARE(lv_font_montserrat_20)
 
-/* LVGL value-change callback. */
-static void event_cb(lv_event_t *e)
+/* ——— Synchronize the selector from runtime state ——————————————— */
+void ui_baud_selector_sync(lv_obj_t *dropdown)
 {
-    lv_obj_t *dd  = lv_event_get_target(e);
-    uint32_t  sel = lv_dropdown_get_selected(dd);
-    uint32_t prev_baud = rs485_get_baudrate();
-    if(sel >= BAUD_CNT) sel = 0;                 /* safety */
-
-    if (rs485_set_baudrate(BAUDS[sel]) != ESP_OK) {
-        for (uint32_t i = 0; i < BAUD_CNT; ++i) {
-            if (BAUDS[i] == prev_baud) {
-                lv_dropdown_set_selected(dd, i);
-                break;
+    if (!dropdown || !lv_obj_is_valid(dropdown)) return;
+    const uint32_t baud = rs485_get_baudrate();
+    for (uint32_t i = 0; i < BAUD_CNT; ++i) {
+        if (BAUDS[i] == baud) {
+            if (lv_dropdown_get_selected(dropdown) != i) {
+                lv_dropdown_set_selected(dropdown, i);
             }
+            return;
         }
     }
 }
 
-/* Public API. */
+static void event_cb(lv_event_t *e)
+{
+    lv_obj_t *dropdown = lv_event_get_target(e);
+    const uint32_t selected = lv_dropdown_get_selected(dropdown);
+    if (selected >= BAUD_CNT || !app_controller_local_baud(BAUDS[selected])) {
+        ui_baud_selector_sync(dropdown);
+    }
+}
+
+/* ——— Public API ————————————————————————— */
 lv_obj_t *ui_baud_selector_create(lv_obj_t *parent)
 {
     /* 1. Build "4800 Bd\n9600 Bd\n..." without a trailing newline. */

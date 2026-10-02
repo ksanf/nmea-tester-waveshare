@@ -22,7 +22,8 @@ typedef struct {
 } sp_l2_config_t;
 
 sp_err_t sp_l2_init (const sp_l2_config_t *cfg, sp_l2_rx_cb_t on_rx, sp_l2_evt_cb_t on_evt, void *user);
-void     sp_l2_deinit(void);
+/* False retains the complete runtime if its RX producer did not stop. */
+bool     sp_l2_deinit(void);
 
 /* Transmit an L2 frame (dlc <= 8). The ID is built from fields. */
 sp_err_t sp_l2_send(const sp_id_fields_t *id, const uint8_t *data, uint8_t dlc);

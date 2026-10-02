@@ -428,16 +428,15 @@ void ui_dropdown_generic_cb(lv_event_t *e)
         lv_dropdown_get_selected_str(lv_event_get_target(e),
                                      tmp, sizeof(tmp));
         /* Copy at most two characters plus NUL. */
-        strncpy((char*)ctx->dst, tmp, 2);
-        ((char*)ctx->dst)[2] = '\0';
+        tmp[2] = '\0';
+        (void)nmea_templates_write_field(ctx->dst, tmp, 3);
     } else {                         /* Single character */
         char tmp[2] = {0};
         lv_dropdown_get_selected_str(lv_event_get_target(e),
                                      tmp, sizeof(tmp));
-        *((char*)ctx->dst) = tmp[0];
+        (void)nmea_templates_write_field(ctx->dst, tmp, 1);
     }
 
-    nmea_mark_dirty(ctx->grp_id);
 }
 
 bool ui_dropdown_bind(lv_obj_t *dd, void *dst, uint8_t is_str2, int grp_id)

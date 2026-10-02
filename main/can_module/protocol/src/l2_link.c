@@ -91,6 +91,9 @@ static void sp_l2_rx_task_(void *arg) {
 #endif
 
     while (!atomic_load_explicit(&s_l2_stop, memory_order_acquire)) {
+        /* IDF 5.5's legacy receive API writes extd/rtr, ID and DLC, but leaves
+         * the other flag bits untouched (and RTR has no received payload). */
+        memset(&msg, 0, sizeof(msg));
         esp_err_t er = can_driver_receive(&msg, SP_L2_RX_TIMEOUT_MS);
         if (atomic_load_explicit(&s_l2_stop, memory_order_acquire)) break;
         if (er == ESP_ERR_TIMEOUT) {
@@ -101,13 +104,18 @@ static void sp_l2_rx_task_(void *arg) {
             continue;
         }
 
-        if ((msg.flags & TWAI_MSG_FLAG_EXTD) == 0) {
-            continue; /* Accept extended frames only. */
+        /* Only extd/rtr are valid RX flags in IDF 5.5. In particular, do not
+         * consult dlc_non_comp: it is not populated by twai_receive_v2(). RTR
+         * carries no data; reject it and invalid lengths before protocol decode. */
+        if (!msg.extd || msg.rtr || msg.data_length_code > 8 ||
+            msg.identifier > 0x1fffffffu) {
+            continue;
         }
 
         sp_unpack_id(msg.identifier, &out.id);
 
-        uint8_t dlc = (msg.data_length_code <= 8) ? msg.data_length_code : 8;
+        uint8_t dlc = msg.data_length_code;
+        memset(&out.data, 0, sizeof(out.data));
         out.dlc = dlc;
         if (dlc) memcpy(out.data, msg.data, dlc);
 
@@ -177,8 +185,8 @@ sp_err_t sp_l2_init(const sp_l2_config_t *cfg,
     return SP_OK;
 }
 
-void sp_l2_deinit(void) {
-    if (!g_l2.inited) return;
+bool sp_l2_deinit(void) {
+    if (!g_l2.inited) return true;
 
     if (atomic_load_explicit(&s_l2_rx_task, memory_order_acquire)) {
         atomic_store_explicit(&s_l2_stop, true, memory_order_release);
@@ -190,7 +198,7 @@ void sp_l2_deinit(void) {
         }
         if (atomic_load_explicit(&s_l2_rx_task, memory_order_acquire)) {
             ESP_LOGE("L2", "RX task stop timed out; resources kept alive");
-            return;
+            return false;
         }
     }
     if (g_l2.tx_mutex) {
@@ -199,6 +207,7 @@ void sp_l2_deinit(void) {
     }
     memset(&g_l2, 0, sizeof(g_l2));
     atomic_store_explicit(&s_l2_stop, false, memory_order_release);
+    return true;
 }
 
 sp_err_t sp_l2_send(const sp_id_fields_t *id, const uint8_t *data, uint8_t dlc) {

@@ -79,9 +79,9 @@ typedef struct {
 /* ===== Reassembled L3 block (Fast-Packet) ===== */
 typedef struct {
     sp_id_fields_t id;
-    uint32_t       pgn;           /* Convenience copy */
-    uint8_t        sid;           /* Sequence ID (0..31) */
-    const uint8_t *payload;       /* Contiguous buffer */
+    uint32_t       pgn;           /* convenience */
+    uint8_t        sid;           /* Sequence ID (0..7) */
+    const uint8_t *payload;       /* contiguous buffer */
     uint16_t       len;           /* 1..223 */
     bool           completed;     /* True when complete */
 } sp_l3_block_t;
@@ -98,44 +98,17 @@ typedef enum {
 
 /* ===== Timing defaults (overridable) ===== */
 typedef struct {
-    uint16_t fp_block_timeout_ms;   /* Assembly window for one FP block */
-    uint16_t announce_period_ms;    /* EF/EE keepalive (~17000 ms in observed traffic) */
-    uint16_t poll_timeout_ms;       /* Response timeout */
-    uint16_t term_idle_keep_ms;     /* Keep the tunnel alive without traffic */
-    uint16_t addr_claim_interval_ms;
+    uint16_t fp_block_timeout_ms;   /* single-block FP assembly timeout */
 } sp_timing_t;
 
-/* ===== Internal channels of a large EF block (L4 payload) =====
- *
- * Values correspond to observed device traffic:
- *   CH=0x0000 - broadcast TLV (ANNOUNCE)
- *   CH=0x00A0 - TCU-to-MT terminal input (TCU sends keyboard data to MT)
- *   CH=0x000A - MT-to-TCU terminal output (MT sends response/echo to TCU)
- *   CH=0x00FF - service/PPP/control traffic (connection request/accept/SLink)
- *
- * SP_CH_TERM_IN/OUT names are relative to MT:
- *   SP_CH_TERM_IN  = 0x00A0 - incoming to MT (what TCU writes to MT)
- *   SP_CH_TERM_OUT = 0x000A - outgoing from MT (what MT displays through TCU)
- */
-typedef enum {
-    SP_CH_TLV_BCAST   = 0x0000, /* Broadcast TLV / NDP v3 discovery */
-    SP_CH_HB_REQ      = 0x0013, /* TCU→MT: heartbeat / Connection Request */
-    SP_CH_HB_RESP     = 0x0031, /* MT→TCU: heartbeat response / Connection Accept */
-    SP_CH_SLINK_FC    = 0x0040, /* MT→TCU: SLink flow control */
-    SP_CH_SLINK_ACK   = 0x0004, /* TCU-to-MT ACK for ch=0x40 */
-    SP_CH_TERM_IN     = 0x00A0, /* Terminal input (TCU-to-MT, TCU sends to antenna) */
-    SP_CH_TERM_OUT    = 0x000A, /* Terminal output (MT-to-TCU, antenna sends to TCU) */
-    SP_CH_SERVICE_APP = 0x00FF  /* Service/PPP/control traffic (Session Registration, PPP) */
-} sp_channel_t;
-
-/* ===== NDP v2 header (6-byte wire format) =====
+/* ===== NDP v2 header (6 bytes; v8 wire-format specification, section 4.2) =====
  *  offset  size  field
  *   0       1    SIG_A = 0x5F
  *   1       1    SIG_B = 0x99
  *   2       1    SIG_C = 0x02 (NDP v2)
- *   3       1    cnt   — rolling counter 0x00-0xFF
- *   4       1    reserved = 0x00
- *   5       1    ch    - channel byte (NDP-layer routing)
+ *   3       1    control — DATA 0x08..0x0F, ACK 0x00..0x07, Open/Accept/Abort 0x10..0x12
+ *   4       1    page  — page index; 0 for the first page
+ *   5       1    ch    — remote_port<<4 | local_port
  *
  * Full format (plen > 0):
  *   [6-byte header][len_lo][len_hi][payload[plen]]

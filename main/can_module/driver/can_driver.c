@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "driver/gpio.h"
+#include "system/port_activity.h"
 #include <stdatomic.h>
 #include <stdlib.h>
 
@@ -32,6 +33,8 @@ static atomic_bool s_watchdog_stop = ATOMIC_VAR_INIT(false);
 
 #define WATCHDOG_STOP_WAIT_MS 500U
 #define WATCHDOG_STOP_POLL_MS  10U
+#define WATCHDOG_ALERT_WAIT_MS 50U
+#define WATCHDOG_STATUS_MS   1000U
 
 static esp_err_t watchdog_start_(void);
 static bool watchdog_stop_(void);
@@ -64,39 +67,55 @@ static twai_timing_config_t get_timing(uint32_t speed) {
     }
 }
 
-// Watchdog task for bus-off monitoring
+// Watchdog monitors bus-off and consumes physical CAN activity alerts.
 static void watchdog_task(void *pvParameters) {
     (void)pvParameters;
     bool recovery_pending = false;
 
     /* watchdog_start_() publishes our handle before releasing this task. */
     (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    TickType_t last_status_check = xTaskGetTickCount() - pdMS_TO_TICKS(WATCHDOG_STATUS_MS);
 
     while (!watchdog_stop_requested_()) {
-        twai_status_info_t status;
-        if (twai_get_status_info(&status) == ESP_OK) {
-            if (status.state == TWAI_STATE_BUS_OFF && !recovery_pending) {
-                ESP_LOGW(TAG, "CAN bus-off detected, initiating recovery");
-                esp_err_t err = twai_initiate_recovery();
-                if (err == ESP_OK) {
-                    recovery_pending = true;
-                } else {
-                    ESP_LOGE(TAG, "CAN recovery start failed: %s", esp_err_to_name(err));
-                }
-            } else if (status.state == TWAI_STATE_STOPPED && recovery_pending) {
-                esp_err_t err = twai_start();
-                if (err == ESP_OK) {
+        TickType_t now = xTaskGetTickCount();
+        if ((TickType_t)(now - last_status_check) >= pdMS_TO_TICKS(WATCHDOG_STATUS_MS)) {
+            last_status_check = now;
+            twai_status_info_t status;
+            if (twai_get_status_info(&status) == ESP_OK) {
+                if (status.state == TWAI_STATE_BUS_OFF && !recovery_pending) {
+                    ESP_LOGW(TAG, "CAN bus-off detected, initiating recovery");
+                    esp_err_t err = twai_initiate_recovery();
+                    if (err == ESP_OK) {
+                        recovery_pending = true;
+                    } else {
+                        ESP_LOGE(TAG, "CAN recovery start failed: %s", esp_err_to_name(err));
+                    }
+                } else if (status.state == TWAI_STATE_STOPPED && recovery_pending) {
+                    esp_err_t err = twai_start();
+                    if (err == ESP_OK) {
+                        recovery_pending = false;
+                        ESP_LOGI(TAG, "CAN restarted after bus-off recovery");
+                    } else {
+                        ESP_LOGE(TAG, "CAN restart after recovery failed: %s",
+                                 esp_err_to_name(err));
+                    }
+                } else if (status.state == TWAI_STATE_RUNNING) {
                     recovery_pending = false;
-                    ESP_LOGI(TAG, "CAN restarted after bus-off recovery");
-                } else {
-                    ESP_LOGE(TAG, "CAN restart after recovery failed: %s",
-                             esp_err_to_name(err));
                 }
-            } else if (status.state == TWAI_STATE_RUNNING) {
-                recovery_pending = false;
             }
         }
-        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+
+        /* TX queue acceptance is not transmission success. Read the ISR alerts
+         * here, while TWAI remains installed, without adding an ISR/UI hook. */
+        uint32_t alerts = 0;
+        esp_err_t err = twai_read_alerts(&alerts, 0);
+        if (watchdog_stop_requested_()) break;
+        if (err == ESP_OK) {
+            if (alerts & TWAI_ALERT_TX_SUCCESS) port_activity_mark(PORT_ACTIVITY_CAN_TX);
+            if (alerts & TWAI_ALERT_RX_DATA) port_activity_mark(PORT_ACTIVITY_CAN_RX);
+        }
+        /* Coalesce busy-bus events to 20 Hz; stop notification wakes us early. */
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(WATCHDOG_ALERT_WAIT_MS));
     }
     ESP_LOGI(TAG, "Watchdog task exiting gracefully");
     atomic_store_explicit(&watchdog_task_handle, NULL, memory_order_release);

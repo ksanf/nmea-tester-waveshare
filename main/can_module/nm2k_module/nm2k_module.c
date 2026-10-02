@@ -6,6 +6,7 @@
  */
 
 #include "nm2k_module.h"
+#include "nm2k_identity.h"
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -13,6 +14,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "protocol_handler.h"
+#include "app/app_controller.h"
 
 #include "config_nmea_tester.h"
 #include "config/memory_config.h"
@@ -44,18 +50,7 @@ LV_FONT_DECLARE(lv_font_montserrat_16);
 #define NM2K_NODE_MAX        32
 #define NM2K_NODE_PGNS        3
 
-typedef struct {
-    bool used;
-    uint8_t sa;
-    uint64_t name;
-    uint64_t last_seen_us;
-    uint32_t last_pgn;
-    uint16_t last_len;
-    uint32_t rx_count;
-    uint32_t seen_pgns[NM2K_NODE_PGNS];
-    char model[33];
-    char serial[21];
-} nm2k_node_t;
+typedef nm2k_node_snapshot_t nm2k_node_t;
 
 static lv_obj_t *scr = NULL;
 static lv_obj_t *lbl_status = NULL;
@@ -65,7 +60,9 @@ static lv_obj_t *page_traffic = NULL;
 static lv_obj_t *lbl_devices = NULL;
 static lv_obj_t *lbl_traffic = NULL;
 static lv_timer_t *ui_timer = NULL;
-static bool stack_ready = false;
+static atomic_bool stack_ready = ATOMIC_VAR_INIT(false);
+static _Atomic(SemaphoreHandle_t) s_runtime_mutex;
+static atomic_bool s_stack_operational;
 static volatile bool s_devices_dirty = true;
 static volatile bool s_traffic_dirty = true;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -83,13 +80,34 @@ static size_t s_traffic_snapshot_head = 0;
 static char s_last_traffic_base[NM2K_LINE_LEN];
 static uint32_t s_last_rx_pgn = 0;
 static uint8_t s_last_rx_src = 0;
-static uint8_t s_last_rx_len = 0;
-static uint32_t s_can_speed = 250000;
+static uint16_t s_last_rx_len = 0;
+static atomic_uint s_can_speed = ATOMIC_VAR_INIT(250000);
+static uint32_t s_rx_count;
+static uint64_t s_traffic_next_seq;
+static uint32_t s_traffic_dropped;
 static uint32_t s_theme_rev = 0;
 
 static inline bool screen_alive_(lv_obj_t *obj)
 {
     return obj && lv_obj_is_valid(obj) && lv_obj_get_parent(obj) == NULL;
+}
+
+static bool runtime_lock_(TickType_t wait)
+{
+    if (!s_runtime_mutex) {
+        SemaphoreHandle_t created = xSemaphoreCreateMutex();
+        if (!created) return false;
+        portENTER_CRITICAL(&s_lock);
+        if (!s_runtime_mutex) { s_runtime_mutex = created; created = NULL; }
+        portEXIT_CRITICAL(&s_lock);
+        if (created) vSemaphoreDelete(created);
+    }
+    return xSemaphoreTake(s_runtime_mutex, wait) == pdTRUE;
+}
+
+static bool runtime_buffers_ready_(void)
+{
+    return s_nodes && s_traffic;
 }
 
 static bool buffers_ready_(void)
@@ -100,7 +118,7 @@ static bool buffers_ready_(void)
 
 static esp_err_t nm2k_stack_start_(void);
 static void nm2k_delete_cb_(lv_event_t *e);
-static void nm2k_destroy_(void);
+
 
 static uint32_t speed_from_sel_(uint16_t sel)
 {
@@ -124,17 +142,14 @@ static void runtime_clear_(void)
 {
     portENTER_CRITICAL(&s_lock);
     if (s_nodes) memset(s_nodes, 0, sizeof(*s_nodes) * NM2K_NODE_MAX);
-    if (s_nodes_snapshot) memset(s_nodes_snapshot, 0, sizeof(*s_nodes_snapshot) * NM2K_NODE_MAX);
     if (s_traffic) memset(s_traffic, 0, sizeof(*s_traffic) * NM2K_TRAFFIC_LINES);
-    if (s_traffic_snapshot) memset(s_traffic_snapshot, 0, sizeof(*s_traffic_snapshot) * NM2K_TRAFFIC_LINES);
     s_traffic_count = 0;
     s_traffic_head = 0;
-    s_traffic_snapshot_count = 0;
-    s_traffic_snapshot_head = 0;
     s_last_traffic_base[0] = 0;
     s_last_rx_pgn = 0;
     s_last_rx_src = 0;
     s_last_rx_len = 0;
+    s_rx_count = 0;
     s_devices_dirty = true;
     s_traffic_dirty = true;
     portEXIT_CRITICAL(&s_lock);
@@ -142,55 +157,39 @@ static void runtime_clear_(void)
 
 static void buffers_free_(void)
 {
+    /* The RX task is joined and the runtime mutex excludes snapshots. */
     free(s_nodes); s_nodes = NULL;
-    free(s_nodes_snapshot); s_nodes_snapshot = NULL;
     free(s_traffic); s_traffic = NULL;
+}
+
+static esp_err_t buffers_alloc_(void)
+{
+    if (runtime_buffers_ready_()) return ESP_OK;
+    s_nodes = CALLOC_WHERE(NM2K_NODES_IN_PSRAM, NM2K_NODE_MAX, sizeof(*s_nodes));
+    s_traffic = CALLOC_WHERE(NM2K_TRAFFIC_IN_PSRAM, NM2K_TRAFFIC_LINES, sizeof(*s_traffic));
+    if (!runtime_buffers_ready_()) { buffers_free_(); return ESP_ERR_NO_MEM; }
+    return ESP_OK;
+}
+
+static void view_buffers_free_(void)
+{
+    free(s_nodes_snapshot); s_nodes_snapshot = NULL;
     free(s_traffic_snapshot); s_traffic_snapshot = NULL;
     free(s_devices_buf); s_devices_buf = NULL;
     free(s_traffic_buf); s_traffic_buf = NULL;
 }
 
-static esp_err_t buffers_alloc_(void)
+static bool view_buffers_alloc_(void)
 {
-    s_nodes = CALLOC_WHERE(NM2K_NODES_IN_PSRAM, NM2K_NODE_MAX, sizeof(*s_nodes));
+    if (s_nodes_snapshot && s_traffic_snapshot && s_devices_buf && s_traffic_buf) return true;
+    view_buffers_free_();
     s_nodes_snapshot = CALLOC_WHERE(NM2K_NODES_IN_PSRAM, NM2K_NODE_MAX, sizeof(*s_nodes_snapshot));
-    s_traffic = CALLOC_WHERE(NM2K_TRAFFIC_IN_PSRAM, NM2K_TRAFFIC_LINES, sizeof(*s_traffic));
     s_traffic_snapshot = CALLOC_WHERE(NM2K_TRAFFIC_IN_PSRAM, NM2K_TRAFFIC_LINES, sizeof(*s_traffic_snapshot));
     s_devices_buf = CALLOC_WHERE(NM2K_BUFS_IN_PSRAM, 1, NM2K_DEVICES_BUF_SIZE);
     s_traffic_buf = CALLOC_WHERE(NM2K_BUFS_IN_PSRAM, 1, NM2K_TRAFFIC_BUF_SIZE);
-
-    if (!buffers_ready_()) {
-        buffers_free_();
-        return ESP_ERR_NO_MEM;
-    }
-    return ESP_OK;
-}
-
-static uint64_t nm2k_make_name_(void)
-{
-    const uint32_t identity_number = NM2K_DEVICE_UNIQUE_ID;
-    const uint32_t manufacturer_code = NM2K_MANUFACTURER_CODE;
-    const uint32_t ecu_instance = 0u;
-    const uint32_t function_instance = 0u;
-    const uint32_t function = 130u;
-    const uint32_t reserved = 0u;
-    const uint32_t vehicle_system = 0u;
-    const uint32_t vehicle_system_instance = 0u;
-    const uint32_t industry_group = 4u;
-    const uint32_t arbitrary_address_capable = 1u;
-
-    uint64_t name = 0;
-    name |= ((uint64_t)(identity_number & 0x1FFFFFu)) << 0;
-    name |= ((uint64_t)(manufacturer_code & 0x7FFu)) << 21;
-    name |= ((uint64_t)(ecu_instance & 0x7u)) << 32;
-    name |= ((uint64_t)(function_instance & 0x1Fu)) << 35;
-    name |= ((uint64_t)(function & 0xFFu)) << 40;
-    name |= ((uint64_t)(reserved & 0x1u)) << 48;
-    name |= ((uint64_t)(vehicle_system & 0x7Fu)) << 49;
-    name |= ((uint64_t)(vehicle_system_instance & 0xFu)) << 56;
-    name |= ((uint64_t)(industry_group & 0x7u)) << 60;
-    name |= ((uint64_t)(arbitrary_address_capable & 0x1u)) << 63;
-    return name;
+    if (s_nodes_snapshot && s_traffic_snapshot && s_devices_buf && s_traffic_buf) return true;
+    view_buffers_free_();
+    return false;
 }
 
 static void traffic_push_(const char *line)
@@ -202,6 +201,8 @@ static void traffic_push_(const char *line)
     snprintf(s_traffic[idx], sizeof(s_traffic[idx]), "%s", line);
     s_traffic_head = (s_traffic_head + 1u) % NM2K_TRAFFIC_LINES;
     if (s_traffic_count < NM2K_TRAFFIC_LINES) s_traffic_count++;
+    else s_traffic_dropped++;
+    s_traffic_next_seq++;
 }
 
 static nm2k_node_t *node_get_(uint8_t sa, bool create)
@@ -320,11 +321,13 @@ static void refresh_devices_view_(void)
     size_t off = 0;
     uint64_t now = (uint64_t)esp_timer_get_time();
 
-    if (!lbl_devices || !page_devices || !buffers_ready_()) return;
+    if (!lbl_devices || !page_devices || !runtime_lock_(0)) return;
+    if (!buffers_ready_()) { xSemaphoreGive(s_runtime_mutex); return; }
 
     portENTER_CRITICAL(&s_lock);
     memcpy(s_nodes_snapshot, s_nodes, sizeof(*s_nodes_snapshot) * NM2K_NODE_MAX);
     portEXIT_CRITICAL(&s_lock);
+    xSemaphoreGive(s_runtime_mutex);
 
     off += (size_t)snprintf(s_devices_buf + off, 4096 - off,
                             "SA NAME32   LAST   P1     P2     AGE  RX MODEL\n");
@@ -354,12 +357,14 @@ static void refresh_traffic_view_(void)
     size_t off = 0;
     size_t first;
 
-    if (!lbl_traffic || !page_traffic || !buffers_ready_()) return;
+    if (!lbl_traffic || !page_traffic || !runtime_lock_(0)) return;
+    if (!buffers_ready_()) { xSemaphoreGive(s_runtime_mutex); return; }
     portENTER_CRITICAL(&s_lock);
     memcpy(s_traffic_snapshot, s_traffic, sizeof(*s_traffic_snapshot) * NM2K_TRAFFIC_LINES);
     s_traffic_snapshot_count = s_traffic_count;
     s_traffic_snapshot_head = s_traffic_head;
     portEXIT_CRITICAL(&s_lock);
+    xSemaphoreGive(s_runtime_mutex);
 
     if (s_traffic_snapshot_count == 0) {
         lv_label_set_text(lbl_traffic, "-- waiting for NMEA2000 traffic --");
@@ -377,15 +382,20 @@ static void refresh_traffic_view_(void)
 
 static void refresh_status_(void)
 {
-    n2k_transport_stats_t st = {0};
+    uint32_t rx_count;
     uint8_t sa = n2k_addr_get_sa();
     uint32_t last_pgn;
     uint8_t last_src;
-    uint8_t last_len;
+    uint16_t last_len;
     int devices = 0;
 
-    if (!lbl_status) return;
-    n2k_transport_get_stats(&st);
+    if (!lbl_status || !runtime_lock_(0)) return;
+    if (!stack_ready) {
+        xSemaphoreGive(s_runtime_mutex);
+        lv_label_set_text(lbl_status, "NM2K stopped");
+        return;
+    }
+
     portENTER_CRITICAL(&s_lock);
     if (s_nodes) {
         for (int i = 0; i < NM2K_NODE_MAX; ++i) if (s_nodes[i].used) devices++;
@@ -393,14 +403,16 @@ static void refresh_status_(void)
     last_pgn = s_last_rx_pgn;
     last_src = s_last_rx_src;
     last_len = s_last_rx_len;
+    rx_count = s_rx_count;
     portEXIT_CRITICAL(&s_lock);
+    xSemaphoreGive(s_runtime_mutex);
 
     if (last_pgn != 0u) {
         lv_label_set_text_fmt(lbl_status,
                               "SA=%02X DEV=%d RX=%" PRIu32 " LAST=%06" PRIu32 " SRC=%02X LEN=%u",
                               sa,
                               devices,
-                              st.rx_single + st.rx_fast_packet_ok + st.rx_bam_ok + st.rx_rts_ok,
+                              rx_count,
                               last_pgn,
                               last_src,
                               (unsigned)last_len);
@@ -409,7 +421,7 @@ static void refresh_status_(void)
                               "SA=%02X DEV=%d RX=%" PRIu32,
                               sa,
                               devices,
-                              st.rx_single + st.rx_fast_packet_ok + st.rx_bam_ok + st.rx_rts_ok);
+                              rx_count);
     }
 }
 
@@ -418,14 +430,15 @@ static void nm2k_on_rx_(const n2k_msg_t *msg, void *user)
     char line[NM2K_LINE_LEN];
     (void)user;
 
-    if (!msg || !buffers_ready_()) return;
+    if (!msg || !runtime_buffers_ready_()) return;
     traffic_format_(msg, line, sizeof(line));
 
     portENTER_CRITICAL(&s_lock);
     node_update_(msg);
     s_last_rx_pgn = msg->pgn;
     s_last_rx_src = msg->src;
-    s_last_rx_len = (uint8_t)msg->len;
+    s_last_rx_len = msg->len;
+    s_rx_count++;
     if (strcmp(line, s_last_traffic_base) != 0) {
         snprintf(s_last_traffic_base, sizeof(s_last_traffic_base), "%s", line);
         traffic_push_(line);
@@ -457,41 +470,107 @@ static void nm2k_timer_cb_(lv_timer_t *t)
         refresh_devices_view_();
         device_ticks = 0;
     }
+    if (dd_speed) lv_dropdown_set_selected(dd_speed, speed_sel_(s_can_speed));
     refresh_status_();
 }
 
-static bool nm2k_stop_(void)
+/* No LVGL operation below: the controller may call these with the display asleep. */
+static bool runtime_stop_locked_(void)
 {
-    if (ui_timer) {
-        lv_timer_del(ui_timer);
-        ui_timer = NULL;
-    }
     if (stack_ready) {
+        s_stack_operational = false;
         esp_err_t err = n2k_transport_deinit();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "N2K transport stop failed: %s", esp_err_to_name(err));
-            if (lbl_status) {
-                lv_label_set_text_fmt(lbl_status, "NM2K stop failed: %s", esp_err_to_name(err));
-            }
-            return false;
-        }
+        if (err != ESP_OK) { ESP_LOGE(TAG, "N2K stop failed: %s", esp_err_to_name(err)); return false; }
         err = can_driver_deinit();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "CAN stop failed: %s", esp_err_to_name(err));
-            if (lbl_status) {
-                lv_label_set_text_fmt(lbl_status, "CAN stop failed: %s", esp_err_to_name(err));
-            }
-            return false;
-        }
+        if (err != ESP_OK) { ESP_LOGE(TAG, "CAN stop failed: %s", esp_err_to_name(err)); return false; }
         stack_ready = false;
     }
     buffers_free_();
     return true;
 }
 
+esp_err_t nm2k_runtime_start(uint32_t speed)
+{
+    if (speed == 0) speed = s_can_speed;
+    if (speed != 125000u && speed != 250000u && speed != 500000u) return ESP_ERR_INVALID_ARG;
+    if (!runtime_lock_(portMAX_DELAY)) return ESP_ERR_NO_MEM;
+    esp_err_t err = ESP_OK;
+    if (protocol_handler_is_running()) { err = ESP_ERR_INVALID_STATE; goto done; }
+    if (stack_ready && s_stack_operational && speed == s_can_speed) goto done;
+    if (!runtime_stop_locked_()) { err = ESP_ERR_TIMEOUT; goto done; }
+    s_can_speed = speed;
+    err = buffers_alloc_();
+    if (err != ESP_OK) goto done;
+    runtime_clear_();
+    err = nm2k_stack_start_();
+    if (err != ESP_OK && !stack_ready) buffers_free_();
+done:
+    xSemaphoreGive(s_runtime_mutex);
+    return err;
+}
+
+bool nm2k_runtime_stop(void)
+{
+    if (!runtime_lock_(portMAX_DELAY)) return false;
+    bool ok = runtime_stop_locked_();
+    xSemaphoreGive(s_runtime_mutex);
+    return ok;
+}
+
+bool nm2k_runtime_running(void) { return stack_ready; }
+uint32_t nm2k_runtime_speed(void) { return s_can_speed; }
+
+bool nm2k_runtime_snapshot(nm2k_snapshot_t *out)
+{
+    if (!out || !runtime_lock_(portMAX_DELAY)) return false;
+    memset(out, 0, sizeof(*out));
+    out->running = stack_ready;
+    out->speed = s_can_speed;
+    out->local_sa = stack_ready ? n2k_addr_get_sa() : 0xFFu;
+    portENTER_CRITICAL(&s_lock);
+    out->rx_count = s_rx_count;
+    out->last_pgn = s_last_rx_pgn;
+    out->last_src = s_last_rx_src;
+    out->last_len = s_last_rx_len;
+    out->next_seq = s_traffic_next_seq;
+    out->traffic_dropped = s_traffic_dropped;
+    if (s_nodes) {
+        for (size_t i = 0; i < NM2K_NODE_MAX; ++i) {
+            if (s_nodes[i].used) out->nodes[out->node_count++] = s_nodes[i];
+        }
+    }
+    if (s_traffic) {
+        out->traffic_count = s_traffic_count;
+        size_t first = (s_traffic_head + NM2K_TRAFFIC_LINES - s_traffic_count) % NM2K_TRAFFIC_LINES;
+        for (size_t i = 0; i < s_traffic_count; ++i) {
+            memcpy(out->traffic[i], s_traffic[(first + i) % NM2K_TRAFFIC_LINES], NM2K_LINE_LEN);
+        }
+    }
+    out->first_seq = out->next_seq - out->traffic_count;
+    portEXIT_CRITICAL(&s_lock);
+    xSemaphoreGive(s_runtime_mutex);
+    return true;
+}
+
+static void pause_view_animations_(lv_obj_t *obj)
+{
+    if (!obj || !lv_obj_is_valid(obj)) return;
+    lv_anim_del(obj, NULL);
+    uint32_t count = lv_obj_get_child_cnt(obj);
+    for (uint32_t i = 0; i < count; ++i) pause_view_animations_(lv_obj_get_child(obj, i));
+}
+
+void nm2k_view_suspend(void)
+{
+    if (ui_timer) { lv_timer_del(ui_timer); ui_timer = NULL; }
+    if (dd_speed && lv_obj_is_valid(dd_speed)) lv_dropdown_close(dd_speed);
+    pause_view_animations_(scr);
+}
+
 static void nm2k_delete_cb_(lv_event_t *e)
 {
     (void)e;
+    nm2k_view_suspend();
     scr = NULL;
     lbl_status = NULL;
     dd_speed = NULL;
@@ -499,59 +578,33 @@ static void nm2k_delete_cb_(lv_event_t *e)
     page_traffic = NULL;
     lbl_devices = NULL;
     lbl_traffic = NULL;
+    view_buffers_free_();
 }
 
-static void nm2k_destroy_(void)
+void nm2k_view_destroy(void)
 {
-    if (!nm2k_stop_()) return;
-    if (!screen_alive_(scr)) return;
-    lv_obj_del(scr);
-}
-
-static esp_err_t nm2k_restart_(uint32_t speed)
-{
-    esp_err_t err;
-
-    if (stack_ready) {
-        err = n2k_transport_deinit();
-        if (err != ESP_OK) return err;
-        err = can_driver_deinit();
-        if (err != ESP_OK) return err;
-        stack_ready = false;
-    }
-    s_can_speed = speed;
-    runtime_clear_();
-    if (lbl_devices) lv_label_set_text(lbl_devices, "-- waiting for devices --");
-    if (lbl_traffic) lv_label_set_text(lbl_traffic, "-- waiting for NMEA2000 traffic --");
-
-    err = nm2k_stack_start_();
-    if (err != ESP_OK) {
-        if (lbl_status) {
-            lv_label_set_text_fmt(lbl_status, "NM2K init failed: %s", esp_err_to_name(err));
-        }
-        return err;
-    }
-    refresh_status_();
-    return ESP_OK;
+    nm2k_view_suspend();
+    if (screen_alive_(scr)) lv_obj_del(scr);
+    else view_buffers_free_();
 }
 
 static void nm2k_home_cb_(lv_event_t *e)
 {
     (void)e;
 
-    if (!nm2k_stop_()) return;
-    screen_ui_show();
-    if (screen_alive_(scr)) lv_obj_del(scr);
+    (void)app_controller_local_stop();
 }
 
 static void nm2k_speed_cb_(lv_event_t *e)
 {
     uint32_t speed;
 
-    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED || app_controller_is_web()) return;
     speed = speed_from_sel_(lv_dropdown_get_selected(lv_event_get_target(e)));
     if (speed == s_can_speed) return;
-    (void)nm2k_restart_(speed);
+    if (!app_controller_local_n2k_speed(speed)) {
+        lv_dropdown_set_selected(lv_event_get_target(e), speed_sel_(s_can_speed));
+    }
 }
 
 static void text_area_style_(lv_obj_t **page_out, lv_obj_t **label_out,
@@ -592,6 +645,12 @@ static void text_area_style_(lv_obj_t **page_out, lv_obj_t **label_out,
 
 static esp_err_t nm2k_stack_start_(void)
 {
+    nm2k_identity_t identity;
+    esp_err_t err = nm2k_identity_read(&identity);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "N2K device identity unavailable: %s", esp_err_to_name(err));
+        return err;
+    }
     const can_config_t cc = {
         .nom_speed = s_can_speed,
         .listen_only = false,
@@ -605,47 +664,37 @@ static esp_err_t nm2k_stack_start_(void)
         .rx_queue_len = 0,
     };
     const n2k_addr_cfg_t ac = {
-        .name = nm2k_make_name_(),
+        .name = identity.name,
         .preferred_sa = 0x25,
         .priority = 6,
     };
-    const n2k_product_info_t prod = {
-        .manufacturer_code = NM2K_MANUFACTURER_CODE,
-        .unique_id = NM2K_DEVICE_UNIQUE_ID,
+    n2k_product_info_t prod = {
+        .manufacturer_code = 2046,
+        .unique_id = identity.identity_number,
         .model_id = "NMEA TESTER NM2K",
         .sw_version = "1.0",
         .hw_version = "ESP32",
-        .serial_code = NM2K_DEVICE_SERIAL,
     };
-    esp_err_t err;
+    _Static_assert(sizeof(prod.serial_code) >= sizeof(identity.serial),
+                   "N2K product serial must contain the complete MAC identity");
+    memcpy(prod.serial_code, identity.serial, sizeof(identity.serial));
 
-    err = can_driver_deinit();
-    if (err != ESP_OK) return err;
     err = can_driver_init(&cc);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+    if (err != ESP_OK) return err;
+    stack_ready = true; /* Ownership persists if a later cleanup cannot join RX. */
+    s_stack_operational = false;
 
     err = n2k_stack_init_all(&tc, &ac, &prod, "ESP32 monitor", "NMEA Tester", true, 5000);
     if (err != ESP_OK) {
-        esp_err_t cleanup_err = can_driver_deinit();
-        if (cleanup_err != ESP_OK) {
-            ESP_LOGE(TAG, "CAN cleanup failed: %s", esp_err_to_name(cleanup_err));
-        }
+        (void)runtime_stop_locked_();
         return err;
     }
-
     err = n2k_transport_subscribe(N2K_PGN_ANY, nm2k_on_rx_, NULL);
     if (err != ESP_OK) {
-        esp_err_t stop_err = n2k_transport_deinit();
-        if (stop_err == ESP_OK) {
-            esp_err_t cleanup_err = can_driver_deinit();
-            if (cleanup_err != ESP_OK) {
-                ESP_LOGE(TAG, "CAN cleanup failed: %s", esp_err_to_name(cleanup_err));
-            }
-        }
+        (void)runtime_stop_locked_();
         return err;
     }
-
-    stack_ready = true;
+    s_stack_operational = true;
     return ESP_OK;
 }
 
@@ -700,53 +749,34 @@ static lv_obj_t *build_screen_(void)
     return scr;
 }
 
-lv_obj_t *nm2k_create(lv_obj_t *parent)
+lv_obj_t *nm2k_view_show(lv_obj_t *parent)
 {
-    esp_err_t err;
     (void)parent;
-
-    if (scr && s_theme_rev != ui_theme_get_revision()) {
-        nm2k_destroy_();
+    if (screen_alive_(scr) && s_theme_rev != ui_theme_get_revision()) nm2k_view_destroy();
+    if (!screen_alive_(scr)) {
+        build_screen_();
+        s_theme_rev = ui_theme_get_revision();
     }
-
-    if (screen_alive_(scr)) {
-        lv_scr_load(scr);
-        refresh_status_();
-        return scr;
-    }
-
-    buffers_free_();
-    s_traffic_count = 0;
-    s_traffic_head = 0;
-    s_traffic_snapshot_count = 0;
-    s_traffic_snapshot_head = 0;
-    s_last_traffic_base[0] = 0;
-    s_last_rx_pgn = 0;
-    s_last_rx_src = 0;
-    s_last_rx_len = 0;
-    s_devices_dirty = true;
-    s_traffic_dirty = true;
-
-    build_screen_();
-    s_theme_rev = ui_theme_get_revision();
-    err = buffers_alloc_();
-    if (err != ESP_OK) {
-        lv_label_set_text_fmt(lbl_status, "NM2K buffer alloc failed: %s", esp_err_to_name(err));
-        lv_scr_load(scr);
-        return scr;
-    }
-    err = nm2k_restart_(s_can_speed);
-    if (err == ESP_OK) {
-        ui_timer = lv_timer_create(nm2k_timer_cb_, NM2K_TIMER_MS, NULL);
+    if (!view_buffers_alloc_()) {
+        lv_label_set_text(lbl_status, "NM2K view allocation failed");
     } else {
-        lv_label_set_text_fmt(lbl_status, "NM2K init failed: %s", esp_err_to_name(err));
+        lv_dropdown_set_selected(dd_speed, speed_sel_(s_can_speed));
+        refresh_devices_view_();
+        refresh_traffic_view_();
+        refresh_status_();
+        if (!ui_timer) ui_timer = lv_timer_create(nm2k_timer_cb_, NM2K_TIMER_MS, NULL);
     }
-
     lv_scr_load(scr);
     return scr;
 }
 
+lv_obj_t *nm2k_create(lv_obj_t *parent)
+{
+    return nm2k_view_show(parent);
+}
+
 void nm2k_module_start(lv_obj_t *parent)
 {
-    (void)nm2k_create(parent);
+    (void)parent;
+    (void)app_controller_local_start(APP_MODE_N2K);
 }

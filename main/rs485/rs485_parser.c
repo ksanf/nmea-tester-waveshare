@@ -6,6 +6,10 @@
  */
 
 #include "rs485/rs485_parser.h"
+#include "rs485/rs485_runtime_log.h"
+#include "app/app_controller.h"
+#include "app/navigation_model.h"
+#include "AISdecoder/aisdecoder_runtime.h"
 #include "rs485/rs485_driver.h"
 #include "rs485/rs485_rx_stream.h"
 #include "AISdecoder/aisdecoder.h"
@@ -62,25 +66,30 @@
 #define PARSER_NAV_BTN_FONT &lv_font_montserrat_28
 #define PARSER_HEX_BTN_FONT &lv_font_montserrat_16
 #define Y_OFFSET     2
-#define PANEL_IDLE_FLUSH_MS 1000U
+#define PANEL_IDLE_FLUSH_MS 200U
 
 /* ─────────────── Static ─────────────── */
 static lv_obj_t *scr_rx       = NULL;
+static lv_obj_t *s_baud_dropdown;
 static lv_obj_t *refresh_btn = NULL;
 static lv_obj_t *pause_btn   = NULL;
 static lv_obj_t *hex_btn     = NULL;
 static lv_obj_t *ais_btn = NULL;
 static lv_obj_t *bit_rects[8] = {0};
-static bool s_paused = false;
+static atomic_bool s_paused = ATOMIC_VAR_INIT(false);
+static rs485_runtime_log_t s_runtime_log = RS485_RUNTIME_LOG_INIT;
+static uint32_t s_view_cursor;
+static atomic_uint_fast32_t s_rx_bytes, s_rx_lines;
+static bool s_view_suspended;
+static bool s_rendered_hex, s_rendered_paused;
 
 static lv_timer_t *poll_timer      = NULL;
 static lv_timer_t *indicator_timer = NULL;
-static QueueHandle_t parser_line_q = NULL;
 static _Atomic(TaskHandle_t) parser_rx_task = NULL;
 static atomic_bool parser_stop = ATOMIC_VAR_INIT(false);
 static atomic_uint_fast32_t s_last_rx_ms = ATOMIC_VAR_INIT(0);
 static atomic_uchar s_last_rx_byte = ATOMIC_VAR_INIT(0);
-static uint32_t s_last_ais_ms = 0;
+static atomic_uint_fast32_t s_last_ais_ms;
 static uint32_t s_theme_rev = 0;
 static uint32_t s_last_panel_flush_ms = 0;
 static bool s_bit_indicator_valid = false;
@@ -89,18 +98,7 @@ static bool s_port_acquired = false;
 static atomic_bool s_hex_mode = ATOMIC_VAR_INIT(false);
 static atomic_uint_fast32_t s_display_generation = ATOMIC_VAR_INIT(0);
 
-#define PARSER_LINE_Q_LEN 16
 #define PARSER_RX_STOP_WAIT_MS 500
-
-typedef struct {
-    rs485_rx_stream_event_kind_t kind;
-    uint32_t generation;
-    char line[RS485_RX_STREAM_NMEA_CAPACITY];
-} parser_line_evt_t;
-
-typedef struct {
-    uint32_t generation;
-} parser_stream_emit_ctx_t;
 
 /* ─────────────── Forward declarations ─────────────── */
 static void   nav_back_cb(lv_event_t *e);
@@ -117,7 +115,6 @@ static void   cb_btn_hex(lv_event_t *e);
 static void   update_ais_button_(void);
 static lv_color_t parser_bit_color_(int state);
 static lv_color_t parser_refresh_color_(bool alert);
-static bool   parser_prepare_port_(void);
 static void   parser_build_screen_(void);
 static bool   parser_start_ui_timers_(void);
 static void   parser_destroy_screen_(void);
@@ -160,130 +157,49 @@ static void cb_btn_refresh(lv_event_t *e) {
  */
 static void scr_delete_cb(lv_event_t *e)
 {
-    lv_event_code_t code = e ? lv_event_get_code(e) : LV_EVENT_ALL;
-    bool runtime_stopped;
-
-    CFG_LOGW(LOG_CFG_RS485_PARSER, TAG,
-             "scr_delete code=%d telnet=%d poll=%d ind=%d task=%d q=%d",
-             (int)code,
-             telnet_server_client_connected() ? 1 : 0,
-             poll_timer ? 1 : 0,
-             indicator_timer ? 1 : 0,
-             atomic_load_explicit(&parser_rx_task, memory_order_acquire) ? 1 : 0,
-             parser_line_q ? 1 : 0);
-    ESP_LOGI(TAG, "Screen delete event — cleaning up globals");
-
-    runtime_stopped = parser_stop_runtime_();
-    if (s_port_acquired && runtime_stopped) {
-        if (rs485_release(RS485_OWNER_PARSER) == ESP_OK) {
-            s_port_acquired = false;
-        }
-    } else if (s_port_acquired) {
-        ESP_LOGE(TAG, "Parser task did not stop; keeping RS-485 ownership");
-    }
-
-    /* Delete timers before clearing widgets so their callbacks cannot run. */
-    if (poll_timer) {
-        lv_timer_del(poll_timer);
-        poll_timer = NULL;
-    }
-    if (indicator_timer) {
-        lv_timer_del(indicator_timer);
-        indicator_timer = NULL;
-    }
-
-    /* Clear widget pointers; LVGL has already destroyed the objects. */
-    for (int i = 0; i < 8; i++) bit_rects[i] = NULL;
-    refresh_btn = NULL;
-    pause_btn = NULL;
-    hex_btn = NULL;
-    ais_btn = NULL;
-    scr_rx = NULL;
-
-    /* Reset the state machine. */
-    atomic_store_explicit(&s_last_rx_byte, 0, memory_order_relaxed);
-    atomic_store_explicit(&s_last_rx_ms, 0, memory_order_release);
-    s_last_ais_ms = 0;
-    s_last_panel_flush_ms = 0;
+    (void)e;
+    if (poll_timer) { lv_timer_del(poll_timer); poll_timer = NULL; }
+    if (indicator_timer) { lv_timer_del(indicator_timer); indicator_timer = NULL; }
+    for (int i = 0; i < 8; ++i) bit_rects[i] = NULL;
+    refresh_btn = pause_btn = hex_btn = ais_btn = scr_rx = s_baud_dropdown = NULL;
     s_bit_indicator_valid = false;
-    s_bit_indicator_value = 0;
-    s_paused = false;
-    atomic_store_explicit(&s_hex_mode, false, memory_order_release);
-    (void)atomic_fetch_add_explicit(&s_display_generation, 1u, memory_order_acq_rel);
 }
 
 static bool parser_start_runtime_(void)
 {
     TaskHandle_t created_task = NULL;
-
-    if (!parser_line_q) {
-        parser_line_q = xQueueCreate(PARSER_LINE_Q_LEN, sizeof(parser_line_evt_t));
-        if (!parser_line_q) {
-            ESP_LOGE(TAG, "Failed to create parser queue");
-            return false;
-        }
-    }
-
-    if (!atomic_load_explicit(&parser_rx_task, memory_order_acquire)) {
-        atomic_store_explicit(&parser_stop, false, memory_order_release);
-        if (xTaskCreatePinnedToCore(parser_rx_task_, "rs485_prx", 4096, NULL, 4,
-                                    &created_task, tskNO_AFFINITY) != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create parser RX task");
-            vQueueDelete(parser_line_q);
-            parser_line_q = NULL;
-            return false;
-        }
-        atomic_store_explicit(&parser_rx_task, created_task, memory_order_release);
-    }
-
+    if (atomic_load_explicit(&parser_rx_task, memory_order_acquire)) return true;
+    atomic_store_explicit(&parser_stop, false, memory_order_release);
+    if (xTaskCreatePinnedToCore(parser_rx_task_, "rs485_prx", 4096, NULL, 4,
+                                &created_task, tskNO_AFFINITY) != pdPASS) return false;
+    atomic_store_explicit(&parser_rx_task, created_task, memory_order_release);
     return true;
 }
 
 static bool parser_stop_runtime_(void)
 {
-    if (atomic_load_explicit(&parser_rx_task, memory_order_acquire)) {
-        const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(PARSER_RX_STOP_WAIT_MS);
-        atomic_store_explicit(&parser_stop, true, memory_order_release);
-        while (atomic_load_explicit(&parser_rx_task, memory_order_acquire)) {
-            if ((int32_t)(deadline - xTaskGetTickCount()) <= 0) {
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
-    }
-    if (!atomic_load_explicit(&parser_rx_task, memory_order_acquire) && parser_line_q) {
-        vQueueDelete(parser_line_q);
-        parser_line_q = NULL;
-    }
+    atomic_store_explicit(&parser_stop, true, memory_order_release);
+    for (unsigned wait = 0; wait < PARSER_RX_STOP_WAIT_MS &&
+         atomic_load_explicit(&parser_rx_task, memory_order_acquire); wait += 10)
+        vTaskDelay(pdMS_TO_TICKS(10));
     return !atomic_load_explicit(&parser_rx_task, memory_order_acquire);
 }
 
-static void parser_queue_line_(rs485_rx_stream_event_kind_t kind, uint32_t generation,
-                               const char *line, size_t len)
-{
-    parser_line_evt_t evt;
-
-    if (!parser_line_q || !line || len == 0) return;
-    if (len >= sizeof(evt.line)) len = sizeof(evt.line) - 1u;
-
-    evt.kind = kind;
-    evt.generation = generation;
-    memcpy(evt.line, line, len);
-    evt.line[len] = '\0';
-    (void)xQueueSend(parser_line_q, &evt, 0);
-}
-
 static void parser_stream_emit_(rs485_rx_stream_event_kind_t kind,
-                                const char *line,
-                                size_t len,
-                                void *user)
+                                const char *line, size_t len, void *user)
 {
-    const parser_stream_emit_ctx_t *ctx = user;
-
-    if (!ctx) return;
-    parser_queue_line_(kind, ctx->generation, line, len);
-    if (kind == RS485_RX_STREAM_EVENT_NMEA && telnet_server_client_connected()) {
-        parser_forward_line_to_telnet_(line, len);
+    (void)user;
+    rs485_runtime_log_append(&s_runtime_log,
+        kind == RS485_RX_STREAM_EVENT_HEX ? RS485_EVENT_HEX : RS485_EVENT_NMEA, line, len);
+    if (kind == RS485_RX_STREAM_EVENT_NMEA) {
+        atomic_fetch_add_explicit(&s_rx_lines, 1u, memory_order_relaxed);
+        navigation_model_process(line);
+        if (aisdecoder_is_ais_sentence(line)) {
+            atomic_store_explicit(&s_last_ais_ms,
+                (uint32_t)(esp_timer_get_time()/1000ULL), memory_order_release);
+            aisdecoder_runtime_feed(line);
+        }
+        if (telnet_server_client_connected()) parser_forward_line_to_telnet_(line, len);
     }
 }
 
@@ -291,11 +207,9 @@ static void parser_rx_task_(void *arg)
 {
     uint8_t buf[128];
     rs485_rx_stream_t stream;
-    parser_stream_emit_ctx_t emit_ctx;
     uint32_t active_generation =
         (uint32_t)atomic_load_explicit(&s_display_generation, memory_order_acquire);
     int local_ind_cnt = INDICATOR_SKIP;
-    uint32_t last_diag_ms = 0;
 
     (void)arg;
     rs485_rx_stream_init(
@@ -303,14 +217,12 @@ static void parser_rx_task_(void *arg)
 
     while (!atomic_load_explicit(&parser_stop, memory_order_acquire)) {
         size_t n = sizeof(buf);
-        uint32_t t0 = (uint32_t)(esp_timer_get_time() / 1000ULL);
 
         if (rs485_driver_read_timeout(buf, &n, RX_WAIT_MS) != ESP_OK || n == 0) {
             vTaskDelay(pdMS_TO_TICKS(POLL_PERIOD_MS));
             continue;
         }
 
-        uint32_t t1 = (uint32_t)(esp_timer_get_time() / 1000ULL);
         const uint32_t generation =
             (uint32_t)atomic_load_explicit(&s_display_generation, memory_order_acquire);
         const bool hex_mode = atomic_load_explicit(&s_hex_mode, memory_order_acquire);
@@ -320,12 +232,7 @@ static void parser_rx_task_(void *arg)
             active_generation = generation;
         }
 
-        if (t1 - last_diag_ms >= 5000) {
-            ESP_LOGI(TAG, "RX diag: read %u bytes in %" PRIu32 " ms, local_len=%u, q_spaces=%d",
-                     (unsigned)n, t1 - t0, (unsigned)stream.nmea_len,
-                     parser_line_q ? (int)uxQueueSpacesAvailable(parser_line_q) : -1);
-            last_diag_ms = t1;
-        }
+        atomic_fetch_add_explicit(&s_rx_bytes, (uint32_t)n, memory_order_relaxed);
 
         for (size_t i = 0; i < n; i++) {
             const uint8_t c = buf[i];
@@ -340,8 +247,7 @@ static void parser_rx_task_(void *arg)
             }
         }
 
-        emit_ctx.generation = active_generation;
-        rs485_rx_stream_feed(&stream, buf, n, parser_stream_emit_, &emit_ctx);
+        rs485_rx_stream_feed(&stream, buf, n, parser_stream_emit_, NULL);
     }
 
     atomic_store_explicit(&parser_rx_task, NULL, memory_order_release);
@@ -359,21 +265,8 @@ static void parser_forward_line_to_telnet_(const char *line, size_t len)
     (void)telnet_server_send(frame, len + 2u);
 }
 
-static bool parser_prepare_port_(void)
-{
-    if (rs485_acquire(RS485_OWNER_PARSER, rs485_get_baudrate()) != ESP_OK) {
-        ESP_LOGE(TAG, "RS-485 init failed");
-        return false;
-    }
-    s_port_acquired = true;
-    return true;
-}
-
 static void parser_build_screen_(void)
 {
-    atomic_store_explicit(&s_hex_mode, false, memory_order_release);
-    (void)atomic_fetch_add_explicit(&s_display_generation, 1u, memory_order_acq_rel);
-
     scr_rx = lv_obj_create(NULL);
     lv_obj_clear_flag(scr_rx, LV_OBJ_FLAG_SCROLLABLE);
     ui_theme_apply_screen(scr_rx);
@@ -387,6 +280,7 @@ static void parser_build_screen_(void)
     ui_theme_apply_card(bar);
 
     lv_obj_t *baud_dd = ui_baud_selector_create(bar);
+    s_baud_dropdown = baud_dd;
     lv_obj_set_width(baud_dd, WIDTH_BAUDSEL);
     lv_obj_align(baud_dd, LV_ALIGN_LEFT_MID, 0, 2);
 
@@ -449,109 +343,50 @@ static bool parser_start_ui_timers_(void)
 
 static void parser_destroy_screen_(void)
 {
-    if (!scr_rx || !lv_obj_is_valid(scr_rx)) return;
-    CFG_LOGW(LOG_CFG_RS485_PARSER, TAG,
-             "parser_destroy_screen telnet=%d task=%d q=%d",
-             telnet_server_client_connected() ? 1 : 0,
-             atomic_load_explicit(&parser_rx_task, memory_order_acquire) ? 1 : 0,
-             parser_line_q ? 1 : 0);
-    lv_obj_del(scr_rx);
+    if (scr_rx && lv_obj_is_valid(scr_rx)) lv_obj_del(scr_rx);
 }
 
 /* ─────────────── UI creation ─────────────── */
 lv_obj_t *rs485_parser_create(lv_obj_t *scr_main)
 {
-    if (scr_rx && s_theme_rev != ui_theme_get_revision()) {
-        CFG_LOGW(LOG_CFG_RS485_PARSER, TAG,
-                 "parser_recreate_due_theme old_rev=%" PRIu32 " new_rev=%" PRIu32,
-                 s_theme_rev, ui_theme_get_revision());
-        parser_destroy_screen_();
-    }
-    if (scr_rx) {
-        CFG_LOGI(LOG_CFG_RS485_PARSER, TAG,
-                 "parser_reuse_screen telnet=%d", telnet_server_client_connected() ? 1 : 0);
-        lv_scr_load(scr_rx);
-        return scr_rx;
-    }
-
-    (void)scr_main;
-
-    if (!parser_prepare_port_()) return NULL;
-
-    parser_build_screen_();
-
-    if (!parser_start_runtime_()) {
-        parser_destroy_screen_();
-        return NULL;
-    }
-    if (!parser_start_ui_timers_()) {
-        parser_destroy_screen_();
-        return NULL;
-    }
-
-    ESP_LOGI(TAG, "Parser screen created with bit indicator and NMEA log.");
-    CFG_LOGI(LOG_CFG_RS485_PARSER, TAG,
-             "parser_create_ok telnet=%d task=%d q=%d",
-             telnet_server_client_connected() ? 1 : 0,
-             atomic_load_explicit(&parser_rx_task, memory_order_acquire) ? 1 : 0,
-             parser_line_q ? 1 : 0);
-    s_theme_rev = ui_theme_get_revision();
-    lv_scr_load(scr_rx);
-    return scr_rx;
+    if (!rs485_parser_runtime_start()) return NULL;
+    return rs485_parser_view_show(scr_main);
 }
 
 /* ─────────────── Poll UART + FSM ─────────────── */
-static uint32_t s_poll_diag_ms = 0;
 static void poll_cb(lv_timer_t *t)
 {
-    parser_line_evt_t evt;
-    int count = 0;
-    bool panel_dirty = false;
-    uint32_t t0 = (uint32_t)(esp_timer_get_time() / 1000ULL);
-    const bool hex_mode = atomic_load_explicit(&s_hex_mode, memory_order_acquire);
-    const uint32_t generation =
-        (uint32_t)atomic_load_explicit(&s_display_generation, memory_order_acquire);
-
     (void)t;
-    if (!scr_rx) return;
-
-    while (parser_line_q && xQueueReceive(parser_line_q, &evt, 0) == pdTRUE) {
-        if (evt.generation != generation) {
-            continue;
+    if (!scr_rx || s_view_suspended) return;
+    rs485_runtime_event_t event;
+    const bool paused = atomic_load_explicit(&s_paused, memory_order_acquire);
+    const bool hex = atomic_load_explicit(&s_hex_mode, memory_order_acquire);
+    if (hex != s_rendered_hex) {
+        nmea_log_set_raw_mode(hex);
+        nmea_log_clear();
+        if (hex_btn) {
+            if (hex) lv_obj_add_state(hex_btn, LV_STATE_CHECKED);
+            else lv_obj_clear_state(hex_btn, LV_STATE_CHECKED);
         }
-
-        if (evt.kind == RS485_RX_STREAM_EVENT_HEX) {
-            if (!s_paused && hex_mode) {
-                nmea_log_add_hex_line(evt.line);
-            }
-        } else {
-            if (!s_paused) {
-                if (!hex_mode) {
-                    nmea_log_add(evt.line);
-                }
-                instrument_panel_process(evt.line);
-                panel_dirty = true;
-            }
-            if (aisdecoder_is_ais_sentence(evt.line)) {
-                s_last_ais_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-                aisdecoder_feed_nmea_line(evt.line);
-            }
-        }
-        count++;
+        s_rendered_hex = hex;
     }
-
-    uint32_t t1 = (uint32_t)(esp_timer_get_time() / 1000ULL);
-    if (!s_paused && (panel_dirty || (t1 - s_last_panel_flush_ms) >= PANEL_IDLE_FLUSH_MS)) {
-        instrument_panel_flush();
-        s_last_panel_flush_ms = t1;
+    if (paused != s_rendered_paused && pause_btn) {
+        lv_obj_set_style_bg_color(pause_btn, lv_color_hex(ui_theme_pause_hex(paused)), 0);
+        lv_label_set_text(lv_obj_get_child(pause_btn, 0), paused ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE);
+        s_rendered_paused = paused;
     }
-    if (t1 - s_poll_diag_ms >= 5000) {
-        ESP_LOGI(TAG, "poll diag: %d lines in %" PRIu32 "ms (q_left=%d)",
-                 count, t1 - t0,
-                 parser_line_q ? (int)uxQueueMessagesWaiting(parser_line_q) : -1);
-        s_poll_diag_ms = t1;
+    for (unsigned i = 0; i < RS485_RUNTIME_LOG_CAPACITY &&
+         rs485_parser_runtime_read(&s_view_cursor, &event, NULL); ++i) {
+        if (paused) continue;
+        if (hex && event.kind == RS485_EVENT_HEX) nmea_log_add_hex_line(event.data);
+        if (!hex && event.kind == RS485_EVENT_NMEA) nmea_log_add(event.data);
     }
-
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time()/1000ULL);
+    if (now_ms - s_last_panel_flush_ms >= PANEL_IDLE_FLUSH_MS) {
+        if (!paused) instrument_panel_flush();
+        ui_baud_selector_sync(s_baud_dropdown);
+        s_last_panel_flush_ms = now_ms;
+    }
     update_ais_button_();
 }
 
@@ -613,24 +448,8 @@ static lv_color_t parser_refresh_color_(bool alert)
 /* ─────────────── Navigation back ─────────────── */
 static void nav_back_cb(lv_event_t *e)
 {
-    CFG_LOGW(LOG_CFG_RS485_PARSER, TAG,
-             "parser_nav_back telnet=%d task=%d q=%d",
-             telnet_server_client_connected() ? 1 : 0,
-             atomic_load_explicit(&parser_rx_task, memory_order_acquire) ? 1 : 0,
-             parser_line_q ? 1 : 0);
-    /*
-     * Load the main screen first, then delete the current screen asynchronously.
-     * scr_delete_cb finishes cleaning up runtime state and pointers.
-     */
-    screen_ui_show();
-
-    if (scr_rx) {
-        lv_obj_t *old = scr_rx;
-        scr_rx = NULL;
-        lv_obj_del_async(old);
-    }
-
-    ESP_LOGI(TAG, "Returned to main screen.");
+    (void)e;
+    (void)app_controller_local_stop();
 }
 
 static void cb_btn_ais(lv_event_t *e)
@@ -648,7 +467,8 @@ static void update_ais_button_(void)
     if (!ais_btn || !lv_obj_is_valid(ais_btn)) return;
 
     now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-    show = (s_last_ais_ms != 0) && ((now_ms - s_last_ais_ms) <= AIS_DETECT_HOLD_MS);
+    uint32_t last_ais_ms = atomic_load_explicit(&s_last_ais_ms, memory_order_acquire);
+    show = (last_ais_ms != 0) && ((now_ms - last_ais_ms) <= AIS_DETECT_HOLD_MS);
 
     if (show) {
         lv_obj_clear_flag(ais_btn, LV_OBJ_FLAG_HIDDEN);
@@ -661,7 +481,7 @@ static void update_ais_button_(void)
 static void cb_btn_pause(lv_event_t *e)
 {
     (void)e;
-    s_paused = !s_paused;
+    atomic_store_explicit(&s_paused, !atomic_load_explicit(&s_paused, memory_order_acquire), memory_order_release);
 
     if (!pause_btn) return;
 
@@ -702,7 +522,6 @@ static void cb_btn_hex(lv_event_t *e)
 void rs485_parser_resume(void)
 {
     if (!scr_rx) return;
-    (void)parser_start_runtime_();
 
     /* Restart poll timer if deleted */
     if (!poll_timer) {
@@ -722,4 +541,109 @@ void rs485_parser_flush_lines(void)
     if (poll_timer) {
         poll_cb(poll_timer);
     }
+}
+
+
+bool rs485_parser_runtime_running(void)
+{
+    return atomic_load_explicit(&parser_rx_task, memory_order_acquire) != NULL;
+}
+
+bool rs485_parser_runtime_start(void)
+{
+    if (rs485_parser_runtime_running()) return true;
+    if (!rs485_runtime_log_init(&s_runtime_log)) return false;
+    if (rs485_acquire(RS485_OWNER_PARSER, rs485_get_baudrate()) != ESP_OK) return false;
+    s_port_acquired = true;
+    if (!aisdecoder_runtime_start() || !parser_start_runtime_()) {
+        aisdecoder_runtime_stop();
+        if (rs485_release(RS485_OWNER_PARSER) == ESP_OK) s_port_acquired = false;
+        return false;
+    }
+    return true;
+}
+
+bool rs485_parser_runtime_stop(void)
+{
+    if (!parser_stop_runtime_()) return false;
+    aisdecoder_runtime_stop();
+    if (s_port_acquired) {
+        if (rs485_release(RS485_OWNER_PARSER) != ESP_OK) return false;
+        s_port_acquired = false;
+    }
+    return true;
+}
+
+esp_err_t rs485_parser_runtime_set_baud(uint32_t baud)
+{
+    return rs485_parser_runtime_running() ? rs485_set_baudrate(baud) : ESP_ERR_INVALID_STATE;
+}
+
+void rs485_parser_runtime_status(rs485_parser_status_t *out)
+{
+    if (!out) return;
+    *out = (rs485_parser_status_t){
+        .running = rs485_parser_runtime_running(), .baud = rs485_get_baudrate(),
+        .hex_mode = atomic_load(&s_hex_mode), .paused = atomic_load(&s_paused),
+        .last_rx_ms = atomic_load(&s_last_rx_ms), .last_ais_ms = atomic_load(&s_last_ais_ms),
+        .last_byte = atomic_load(&s_last_rx_byte),
+        .bytes_received = atomic_load(&s_rx_bytes), .lines_received = atomic_load(&s_rx_lines)
+    };
+}
+
+void rs485_parser_runtime_set_hex(bool enabled)
+{
+    atomic_store_explicit(&s_hex_mode, enabled, memory_order_release);
+    atomic_fetch_add_explicit(&s_display_generation, 1u, memory_order_acq_rel);
+}
+
+void rs485_parser_runtime_set_paused(bool paused)
+{
+    atomic_store_explicit(&s_paused, paused, memory_order_release);
+}
+
+void rs485_parser_runtime_refresh(void)
+{
+    (void)navigation_model_refresh_templates();
+    esp_err_t result = nmea_templates_save_now();
+    if (result != ESP_OK) ESP_LOGW(TAG, "Template save failed: %s", esp_err_to_name(result));
+}
+
+bool rs485_parser_runtime_read(uint32_t *cursor, rs485_runtime_event_t *out, uint32_t *dropped)
+{
+    return rs485_runtime_log_read(&s_runtime_log, cursor, out, dropped);
+}
+
+void rs485_parser_view_suspend(bool suspended)
+{
+    s_view_suspended = suspended;
+    if (suspended && refresh_btn) {
+        lv_anim_del(refresh_btn, anim_refresh_color_cb);
+        lv_obj_set_style_bg_color(refresh_btn, parser_refresh_color_(false), 0);
+    }
+    if (poll_timer) { if (suspended) lv_timer_pause(poll_timer); else lv_timer_resume(poll_timer); }
+    if (indicator_timer) { if (suspended) lv_timer_pause(indicator_timer); else lv_timer_resume(indicator_timer); }
+}
+
+void rs485_parser_view_destroy(void)
+{
+    parser_destroy_screen_();
+}
+
+lv_obj_t *rs485_parser_view_show(lv_obj_t *parent)
+{
+    (void)parent;
+    if (scr_rx && s_theme_rev != ui_theme_get_revision()) parser_destroy_screen_();
+    if (!scr_rx) {
+        parser_build_screen_();
+        s_rendered_hex = !atomic_load(&s_hex_mode);
+        s_rendered_paused = !atomic_load(&s_paused);
+        if (!parser_start_ui_timers_()) { parser_destroy_screen_(); return NULL; }
+        s_theme_rev = ui_theme_get_revision();
+    }
+    rs485_parser_view_suspend(false);
+    lv_scr_load(scr_rx);
+    ui_baud_selector_sync(s_baud_dropdown);
+    poll_cb(NULL);
+    return scr_rx;
 }

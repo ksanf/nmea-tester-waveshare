@@ -58,3 +58,9 @@ cmake_install.cmake
 install_manifest.txt
 project_description.json
 flash_project_args
+
+# Local analysis and optional browser-test dependencies
+.work/
+node_modules/
+playwright-report/
+test-results/

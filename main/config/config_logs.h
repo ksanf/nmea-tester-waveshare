@@ -137,9 +137,6 @@
 /* File: main/can_module/driver/can_driver.c
  * Basic direct ESP_LOG output from the CAN/TWAI driver. */
 #define LOG_CFG_CAN_DRIVER                0
-/* File: main/can_module/protocol/src/L5_service.c
- * L5 service initialization and deinitialization. */
-#define LOG_CFG_L5_SERVICE                0
 /* File: main/can_module/n2k_driver/src/n2k_addr_claim.c
  * NMEA 2000 address-claim conflict logs. */
 #define LOG_CFG_N2K_ADDR_CLAIM            0
@@ -154,9 +151,6 @@
 /* Files: main/can_module/bridge_can_module/protocol_handler.c
  * Raw PIPE text and direct terminal-tunnel dumps. */
 #define LOG_CFG_BRIDGE_PIPE               0
-/* Files: Sailor protocol stack (reserved).
- * High-level Sailor/MT-specific events. */
-#define LOG_CFG_BRIDGE_SAILOR             0
 /* Files: main/can_module/protocol/src/l2_link.c,
  *        main/can_module/n2k_driver/src/n2k_transport.c
  * Low-level N2K/CAN TX/RX transport dump. */
@@ -167,8 +161,6 @@
 /* Files: protocol_handler.c
  * L3 layer/control event trace. */
 #define LOG_CFG_BRIDGE_L3                0
-/* Files: bridge transport/L4 trace. */
-#define LOG_CFG_BRIDGE_L4                0
 /* Files: protocol_handler.c
  * L7 terminal-tunnel frames and text blocks. */
 #define LOG_CFG_BRIDGE_L7                0
@@ -184,11 +176,9 @@
 #define NUM_EDIT_DEBUG                   LOG_CFG_NUMERIC_EDITOR
 
 #define BRIDGE_CAN_LOG_PIPE              LOG_CFG_BRIDGE_PIPE
-#define BRIDGE_CAN_LOG_SAILOR            LOG_CFG_BRIDGE_SAILOR
 #define BRIDGE_CAN_LOG_N2K_TXRX          LOG_CFG_BRIDGE_N2K_TXRX
 #define BRIDGE_CAN_LOG_CANDRV            LOG_CFG_BRIDGE_CANDRV
 #define BRIDGE_CAN_LOG_L3                LOG_CFG_BRIDGE_L3
-#define BRIDGE_CAN_LOG_L4                LOG_CFG_BRIDGE_L4
 #define BRIDGE_CAN_LOG_L7                LOG_CFG_BRIDGE_L7
 #define BRIDGE_CAN_LOG_HANDLER           LOG_CFG_BRIDGE_HANDLER
 #define BRIDGE_CAN_LOG_PCMT              LOG_CFG_BRIDGE_PCMT

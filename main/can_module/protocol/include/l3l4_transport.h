@@ -32,26 +32,26 @@ enum {
 /**
  * @brief Shared application block structure for TX and RX.
  *
- * Contains header metadata plus a pointer to raw application data.
- * Internal payload wire format, for reference:
- *   [SIG0 SIG1 SIG2][SER][CHAN_LE_L][CHAN_LE_H][LEN_LE_L][LEN_LE_H][APP...]
+ * Metadata (header) and a pointer to the application payload.
+ * Internal payload wire format (for reference):
+ *   [SIG0 SIG1 SIG2][SER][PAGE=0][CHANNEL][LEN_LE_L][LEN_LE_H][APP...]
  *
  * On TX:
  *   - Fill sig[3], series, channel_le, app_data, and app_len.
  *   - The module writes LEN_LE = app_len and packs the block into Fast-Packet.
  *
  * On RX:
- *   - The module fills the structure and invokes the callback.
- *   - app_data and app_len remain valid only during the callback; copy data if needed later.
+ *   - The module fills this structure and invokes the callback after assembling all NDP pages.
+ *   - app_data and app_len are valid only during the callback; copy the data if it must be retained.
  */
 typedef struct {
-    uint8_t        sig[3];       /**< 3-byte block signature, e.g. {SP_BIG_SIG_A, SP_BIG_SIG_B, SP_BIG_SIG_C} */
-    uint8_t        series;       /**< 1-byte series counter, e.g. 0x08..0x0F */
-    uint16_t       channel_le;   /**< Channel identifier in little-endian order */
-    uint8_t        page_idx;     /**< TERM_OUT continuation page index from Byte4 (0x00/0x01/0x02/...) */
-    uint8_t        page_final;   /**< 1 for the final FP block of a TERM_OUT page (wire_len < 223) */
-    const uint8_t *app_data;     /**< Pointer to raw APP data without the header */
-    uint16_t       app_len;      /**< APP data length in bytes */
+    uint8_t        sig[3];       /**< Three-byte block signature, e.g. {SP_BIG_SIG_A, SP_BIG_SIG_B, SP_BIG_SIG_C} */
+    uint8_t        series;       /**< One-byte series counter, e.g. 0x08..0x0F */
+    uint16_t       channel_le;   /**< One byte: remote_port<<4 | local_port; high byte is zero */
+    uint8_t        page_idx;     /**< Zero: RX continuation pages are assembled before delivery */
+    uint8_t        page_final;   /**< 1 for a fully assembled NDP message */
+    const uint8_t *app_data;     /**< Pointer to the APP payload, excluding the header */
+    uint16_t       app_len;      /**< APP payload length in bytes */
 } sp_app_block_t;
 
 /* ===================== Upper-layer callbacks ===================== */
@@ -131,13 +131,13 @@ void     sp_tr_on_l2_frame(const sp_l2_frame_t *frm);
  *                  Otherwise *io_sid in 0..7 is used and incremented modulo 8 after transmission.
  * @return          SP_OK or an error code.
  *
- * Packing details:
- *   - The payload represented by Byte1 of the first frame is built as:
- *       [SIG3][SER][CHAN_LE(2)][LEN_LE(2)=blk->app_len][APP...]
- *   - The first frame carries the first 6 bytes (SIG3,SER,CHAN_LE), followed by 7-byte chunks:
- *       first the 2-byte LEN_LE, then APP data in 7-byte chunks.
- *   - Every frame uses DLC=8 and unused bytes are padded with 0xFF.
- *   - The total Fast-Packet payload must not exceed 223 bytes.
+ * Encoding details:
+ *   - The payload (length in byte 1 of the first frame) is encoded as:
+ *       [SIG3][SER][PAGE=0][CHANNEL][LEN_LE(2)=blk->app_len][APP...]
+ *   - The first frame carries six bytes (SIG3,SER,PAGE,CHANNEL), followed by seven-byte continuation chunks:
+ *       first two LEN_LE bytes, then the APP payload in seven-byte chunks.
+ *   - All frames use DLC=8; unused bytes are padded with 0xFF.
+ *   - Fast-Packet bounds: each payload is at most 223 bytes; an NDP message of up to 512 bytes spans multiple FP pages.
  */
 sp_err_t sp_tr_send_app(const sp_id_fields_t *id,
                         const sp_app_block_t *blk,
@@ -152,13 +152,13 @@ sp_err_t sp_tr_send_app(const sp_id_fields_t *id,
  *   Byte2 = 0x5F (magic)
  *   Byte3 = 0x99 (magic)
  *   Byte4 = 0x02 (NDP v2)
- *   Byte5 = cnt  (rolling counter)
- *   Byte6 = 0x00 (reserved)
+ *   Byte5 = cnt  (ACK sequence 0..7)
+ *   Byte6 = 0x00 (page)
  *   Byte7 = ch   (channel byte)
  *
  * @param id   CAN ID fields (pri,dp,pf,ps,sa)
- * @param cnt  Rolling counter inserted into byte 5 of the NDP header
- * @param ch   Channel byte (0x04, 0x13, 0xA0, etc.)
+ * @param cnt  ACK sequence (0..7)
+ * @param ch   Channel byte (remote_port<<4 | local_port)
  */
 sp_err_t sp_tr_send_short_ack(const sp_id_fields_t *id, uint8_t cnt, uint16_t ch);
 

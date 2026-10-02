@@ -4,6 +4,7 @@
  */
 
 #include "system/telnet_server.h"
+#include "system/telnet_rx.h"
 
 #include "config/config_nmea_tester.h"
 #include "config/memory_config.h"
@@ -50,14 +51,6 @@ typedef struct {
     uint8_t *p;
     uint16_t len;
 } telnet_tx_evt_t;
-
-typedef enum {
-    TELNET_RX_DATA = 0,
-    TELNET_RX_IAC,
-    TELNET_RX_NEGOPT,
-    TELNET_RX_SB,
-    TELNET_RX_SB_IAC,
-} telnet_rx_state_t;
 
 static telnet_server_rx_cb_t telnet_rx_acquire_(void **user)
 {
@@ -198,74 +191,6 @@ static void telnet_publish_start_(esp_err_t result)
         memory_order_release, memory_order_relaxed);
 }
 
-static size_t telnet_filter_rx_(uint8_t *buf, size_t len,
-                                telnet_rx_state_t *state, bool *saw_cr)
-{
-    size_t out = 0;
-
-    if (!buf || !state || !saw_cr) return 0;
-
-    for (size_t i = 0; i < len; ++i) {
-        uint8_t b = buf[i];
-
-    again:
-        switch (*state) {
-        case TELNET_RX_DATA:
-            if (*saw_cr) {
-                *saw_cr = false;
-                if (b == '\n' || b == '\0') {
-                    buf[out++] = '\r';
-                    break;
-                }
-                buf[out++] = '\r';
-                goto again;
-            }
-
-            if (b == 0xFFu) {
-                *state = TELNET_RX_IAC;
-            } else if (b == '\r') {
-                *saw_cr = true;
-            } else {
-                buf[out++] = b;
-            }
-            break;
-
-        case TELNET_RX_IAC:
-            if (b == 0xFFu) {
-                buf[out++] = 0xFFu;
-                *state = TELNET_RX_DATA;
-            } else if (b == 0xFAu) {
-                *state = TELNET_RX_SB;
-            } else if (b == 0xFBu || b == 0xFCu || b == 0xFDu || b == 0xFEu) {
-                *state = TELNET_RX_NEGOPT;
-            } else {
-                *state = TELNET_RX_DATA;
-            }
-            break;
-
-        case TELNET_RX_NEGOPT:
-            *state = TELNET_RX_DATA;
-            break;
-
-        case TELNET_RX_SB:
-            if (b == 0xFFu) {
-                *state = TELNET_RX_SB_IAC;
-            }
-            break;
-
-        case TELNET_RX_SB_IAC:
-            if (b == 0xF0u) {
-                *state = TELNET_RX_DATA;
-            } else if (b != 0xFFu) {
-                *state = TELNET_RX_SB;
-            }
-            break;
-        }
-    }
-
-    return out;
-}
-
 static void telnet_server_task_(void *arg)
 {
     (void)arg;
@@ -340,8 +265,7 @@ static void telnet_server_task_(void *arg)
         atomic_store_explicit(&s_client_ipv4, ip, memory_order_release);
         atomic_store_explicit(&s_client_fd, client_fd, memory_order_release);
         ESP_LOGI(TAG, "Client connected");
-        telnet_rx_state_t rx_state = TELNET_RX_DATA;
-        bool saw_cr = false;
+        telnet_rx_t rx_state = {0};
         telnet_tx_evt_t pending_tx = {0};
         size_t pending_tx_off = 0;
 
@@ -363,7 +287,7 @@ static void telnet_server_task_(void *arg)
                 void *rx_user = NULL;
                 telnet_server_rx_cb_t rx_cb = telnet_rx_acquire_(&rx_user);
                 if (rx_cb) {
-                    size_t filtered = telnet_filter_rx_(buf, (size_t)n, &rx_state, &saw_cr);
+                    size_t filtered = telnet_rx_filter(&rx_state, buf, (size_t)n);
                     if (filtered > 0) {
                         rx_cb(buf, filtered, rx_user);
                     }

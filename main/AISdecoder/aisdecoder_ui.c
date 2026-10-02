@@ -3,11 +3,10 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "AISdecoder/aisdecoder_internal.h"
+#include "AISdecoder/aisdecoder.h"
 
 #include "config/config_nmea_tester.h"
 #include "config/memory_config.h"
-#include "system/telnet_router.h"
 #include "ui/dialog_ui.h"
 #include "ui/screens/screen_ui.h"
 #include "ui/ui_theme.h"
@@ -17,7 +16,6 @@
 #define CFG_LOG_MODULE LOG_CFG_AISDEC_UI
 #include "config_logs.h"
 #include <freertos/FreeRTOS.h>
-#include <freertos/queue.h>
 #include <freertos/task.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -34,13 +32,8 @@ LV_FONT_DECLARE(lv_font_nmea_unscii_16)
 #define AISDEC_TICKER_H             22
 #define AISDEC_MARGIN               8
 #define AISDEC_LIST_Y               (AISDEC_TICKER_Y + AISDEC_TICKER_H + 6)
-#define AISDEC_LINE_Q_LEN           16
 #define AISDEC_TEXT_BUFSZ           (20U * 1024U)
 #define AISDEC_REFRESH_MS          500U
-
-typedef struct {
-    char line[AISDEC_MAX_LINE];
-} ais_line_evt_t;
 
 static lv_obj_t *scr_ais = NULL;
 static lv_obj_t *lbl_ticker = NULL;
@@ -48,7 +41,6 @@ static lv_obj_t *lbl_header = NULL;
 static lv_obj_t *page_list = NULL;
 static lv_obj_t *lbl_list = NULL;
 static lv_timer_t *tmr_drain = NULL;
-static QueueHandle_t s_line_q = NULL;
 static uint32_t s_ais_lines_seen = 0;
 static char s_last_line[AISDEC_MAX_LINE];
 static char *s_list_buf = NULL;
@@ -148,7 +140,6 @@ static void format_lon_(float lon, char *dst, size_t dst_sz)
 
 static void render_target_list_(void)
 {
-    uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     size_t count;
     lv_coord_t scroll_x = 0;
     lv_coord_t scroll_y = 0;
@@ -158,7 +149,7 @@ static void render_target_list_(void)
 
     scroll_x = lv_obj_get_scroll_x(page_list);
     scroll_y = lv_obj_get_scroll_y(page_list);
-    count = aisdecoder_decode_collect(s_render_targets, AISDEC_MAX_TARGETS, now_ms);
+    count = aisdecoder_runtime_snapshot(s_render_targets, AISDEC_MAX_TARGETS, NULL);
 
     ESP_LOGI(TAG, "render targets: count=%u ais_lines=%lu last=%s",
              (unsigned)count, (unsigned long)s_ais_lines_seen,
@@ -218,21 +209,19 @@ static void list_scroll_cb_(lv_event_t *e)
 
 static void drain_timer_cb_(lv_timer_t *tmr)
 {
-    ais_line_evt_t evt;
+    aisdecoder_runtime_status_t status;
     (void)tmr;
-
-    bool updated = false;
-    while (s_line_q && xQueueReceive(s_line_q, &evt, 0) == pdTRUE) {
-        strlcpy(s_last_line, evt.line, sizeof(s_last_line));
-        s_ais_lines_seen++;
-        updated = true;
-    }
-    if (updated) {
-        if (lbl_ticker && lv_obj_is_valid(lbl_ticker)) {
-            lv_label_set_text(lbl_ticker, s_last_line);
+    aisdecoder_runtime_status(&status);
+    if (status.lines_seen != s_ais_lines_seen) {
+        s_ais_lines_seen = status.lines_seen;
+        strlcpy(s_last_line, status.last_line, sizeof(s_last_line));
+        if (lbl_ticker) {
+            lv_label_set_text(lbl_ticker, s_last_line[0] ? s_last_line :
+                              "Waiting for AIS sentences (!AIVDM / !AIVDO)...");
         }
-        render_target_list_();
     }
+    /* Age-out must run even when the receiver goes silent. */
+    render_target_list_();
 }
 
 static void scr_delete_cb_(lv_event_t *e)
@@ -250,11 +239,6 @@ static void scr_delete_cb_(lv_event_t *e)
     scr_ais = NULL;
     s_scr_prev = NULL;
     ui_buffers_free_();
-    aisdecoder_decode_deinit();
-    if (s_line_q) {
-        vQueueDelete(s_line_q);
-        s_line_q = NULL;
-    }
 }
 
 static void destroy_(void)
@@ -265,21 +249,15 @@ static void destroy_(void)
     old = scr_ais;
     scr_ais = NULL;
 
-    telnet_router_set_active(TELNET_ROUTE_NONE);
     if (tmr_drain) {
         lv_timer_del(tmr_drain);
         tmr_drain = NULL;
-    }
-    if (s_line_q) {
-        vQueueDelete(s_line_q);
-        s_line_q = NULL;
     }
     if (s_scr_prev && screen_alive_(s_scr_prev)) {
         lv_scr_load(s_scr_prev);
     } else {
         lv_scr_load(screen_ui_get_main());
     }
-    aisdecoder_decode_deinit();
     ui_buffers_free_();
     lbl_ticker = NULL;
     lbl_header = NULL;
@@ -311,18 +289,19 @@ lv_obj_t *aisdecoder_create(lv_obj_t *parent)
     }
     if (scr_ais) {
         s_theme_rev = ui_theme_get_revision();
+        aisdecoder_view_suspend(false);
         lv_scr_load(scr_ais);
         return scr_ais;
     }
 
     s_scr_prev = parent;
+    s_ais_lines_seen = UINT32_MAX;
+    s_last_line[0] = '\0';
     ui_buffers_free_();
     if (!ui_buffers_alloc_()) {
         ESP_LOGE(TAG, "UI buffer alloc failed");
         return parent;
     }
-    telnet_router_set_active(TELNET_ROUTE_NONE);
-    aisdecoder_decode_reset();
 
     scr_ais = lv_obj_create(NULL);
     lv_obj_clear_flag(scr_ais, LV_OBJ_FLAG_SCROLLABLE);
@@ -393,12 +372,6 @@ lv_obj_t *aisdecoder_create(lv_obj_t *parent)
 
     render_target_list_();
 
-    s_line_q = xQueueCreate(AISDEC_LINE_Q_LEN, sizeof(ais_line_evt_t));
-    if (!s_line_q) {
-        ESP_LOGE(TAG, "line queue alloc failed");
-        destroy_();
-        return parent;
-    }
     tmr_drain = lv_timer_create(drain_timer_cb_, AISDEC_REFRESH_MS, NULL);
     if (!tmr_drain) {
         ESP_LOGE(TAG, "drain timer alloc failed");
@@ -416,21 +389,24 @@ lv_obj_t *aisdecoder_get_screen(void)
     return scr_ais;
 }
 
-bool aisdecoder_is_ais_sentence(const char *line)
+void aisdecoder_view_suspend(bool suspended)
 {
-    return aisdecoder_parse_is_sentence(line);
+    if (!tmr_drain) return;
+    if (suspended) lv_timer_pause(tmr_drain);
+    else {
+        lv_timer_resume(tmr_drain);
+        drain_timer_cb_(tmr_drain);
+    }
 }
 
-void aisdecoder_feed_nmea_line(const char *line)
+void aisdecoder_view_destroy(void)
 {
-    ais_line_evt_t evt;
-
-    if (!line || !*line) return;
-    if (!scr_ais || !screen_alive_(scr_ais)) return;
-
-    aisdecoder_parse_feed_line(line);
-
-    if (!s_line_q) return;
-    strlcpy(evt.line, line, sizeof(evt.line));
-    (void)xQueueSend(s_line_q, &evt, 0);
+    lv_obj_t *old = scr_ais;
+    if (!old) return;
+    if (tmr_drain) { lv_timer_del(tmr_drain); tmr_drain = NULL; }
+    scr_ais = NULL;
+    s_scr_prev = NULL;
+    lbl_ticker = NULL; lbl_header = NULL; page_list = NULL; lbl_list = NULL;
+    ui_buffers_free_();
+    lv_obj_del_async(old);
 }

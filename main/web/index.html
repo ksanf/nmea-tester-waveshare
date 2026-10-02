@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en" data-web-theme="day"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><script>try{if(localStorage.getItem("nmea-web-theme")==="night")document.documentElement.dataset.webTheme="night";}catch{}</script><title>NMEA Tester · Marine Console</title><link rel="icon" href="data:,">
+<style>
+:root{
+color-scheme:light;
+--navy:#102b4a;--navy-deep:#102b4a;--sea:#0050c8;--teal:#006d78;--foam:#7bc8ff;
+--bg:#eaf1f8;--card:#fff;--line:#b9cbdf;--text:#14263d;--muted:#44566c;
+--bad:#b42318;--amber:#985400;--shadow:0 3px 14px #102b4a08;
+--on-accent:#fff;--accent-hover:#0045ac;--accent-soft:#e0ebfa;
+--surface:#f5f8fc;--control-line:#aabdd4;
+--chrome-text:#f2f7ff;--chrome-muted:#bdcee3;--chrome-control:#1d3b5e;--chrome-line:#466583;--chrome-hover:#284b72;--on-foam:#102b4a;
+--success:#14663c;--success-bg:#e8f3eb;--success-line:#85b89a;
+--warning-bg:#fff1db;--warning-line:#caaa70;--bad-bg:#fff1ee;--bad-line:#d89a92;
+--log-bg:#071a30;--log-text:#e3ecf6;--log-muted:#96aec9;--log-line:#345472;--log-tx:#ffd27a;--log-rx:#7dddd6;--log-scroll:#4c6d8d;
+--metric-warm:#a85b00;--overlay:#04132299;--dialog-shadow:0 30px 100px #001c3a50;
+}
+:root[data-web-theme="night"]{
+color-scheme:dark;
+--navy:#1a1d22;--navy-deep:#1a1d22;--sea:#ffc247;--teal:#73dcd6;--foam:#ffc247;
+--bg:#141619;--card:#22262b;--line:#48505c;--text:#f0f2f5;--muted:#b5c0cd;
+--bad:#ff8f86;--amber:#ffc247;--shadow:0 3px 14px #00000020;
+--on-accent:#1b2025;--accent-hover:#ffd16d;--accent-soft:#3d3628;
+--surface:#1b1e23;--control-line:#5b6571;
+--chrome-text:#f4f6fa;--chrome-muted:#bac5d2;--chrome-control:#282d34;--chrome-line:#596471;--chrome-hover:#363e48;--on-foam:#1b2025;
+--success:#73d9a1;--success-bg:#253c32;--success-line:#46765c;
+--warning-bg:#3d3220;--warning-line:#aa8240;--bad-bg:#382c2e;--bad-line:#a15f5b;
+--log-bg:#0b0d10;--log-text:#e5edf5;--log-muted:#9fafbd;--log-line:#48505c;--log-tx:#ffd27a;--log-rx:#73dcd6;--log-scroll:#5b6571;
+--metric-warm:#ffc247;--overlay:#000000b3;--dialog-shadow:0 30px 100px #00000080;
+}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input,select,textarea{font:inherit}button{cursor:pointer;min-height:42px;border:1px solid var(--line);border-radius:7px;padding:9px 14px;color:var(--text);background:var(--card);font-weight:600;transition:background .12s,border-color .12s}button:hover:enabled{background:var(--accent-soft);border-color:var(--sea)}button:disabled{opacity:.48;cursor:default}button.primary{background:var(--sea);border-color:var(--sea);color:var(--on-accent)}button.primary:hover:enabled{background:var(--accent-hover)}button.danger{color:var(--bad);border-color:var(--bad-line);background:var(--bad-bg)}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--sea);outline-offset:3px}input:not([type=checkbox]),select,textarea{width:100%;min-width:0;background:var(--surface);border:1px solid var(--control-line);color:var(--text);border-radius:6px;padding:10px 11px;min-height:43px}input[type=checkbox]{width:19px;height:19px;margin:0;accent-color:var(--sea);flex:none}label{display:grid;gap:6px;color:var(--muted);font-size:12px;font-weight:600}label.check{display:flex;align-items:center;gap:9px;min-height:42px;font-size:13px;color:var(--text)}h1,h2,h3,p{margin-top:0}h1{font-size:17px;letter-spacing:.055em;margin-bottom:0}h2{font-size:16px;font-weight:650;margin-bottom:0}h3{font-size:15px;margin-bottom:10px}p{line-height:1.65}small,.muted,.subtle{color:var(--muted)}small,.subtle{font-size:12px}.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.grow{flex:1;min-width:0}.space{margin-top:16px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(195px,1fr));gap:16px}.split{display:grid;grid-template-columns:1fr 1fr;gap:18px}.split>*{min-width:0}[hidden]{display:none!important}fieldset{min-width:0;border:0;padding:0;margin:0}svg{display:block;flex:none}
+.topbar{background:var(--navy-deep);color:var(--chrome-text);min-height:83px;padding:16px clamp(18px,3.2vw,48px);display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;border-bottom:3px solid var(--sea)}.brand{display:flex;gap:13px;align-items:center}.brand svg{color:var(--foam)}.brand-sub{font-size:10px;letter-spacing:.19em;color:var(--chrome-muted);margin-top:3px}.topbar button{background:var(--chrome-control);border-color:var(--chrome-line);color:var(--chrome-text);font-size:12px}.topbar button:hover:enabled{background:var(--chrome-hover);border-color:var(--foam)}.topbar button.primary{background:var(--foam);color:var(--on-foam);border-color:var(--foam)}.status{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--chrome-muted)}.dot{width:7px;height:7px;background:var(--muted);border-radius:50%;flex:none}.online .dot{background:var(--foam);box-shadow:none}.top-actions{gap:18px}main{max-width:1600px;margin:auto;padding:22px clamp(16px,3.2vw,48px) 12px}.notice{font-size:12px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--sea);border-radius:6px;padding:11px 15px;margin-bottom:20px}.notice.error{color:var(--bad);border-color:var(--bad-line);border-left-color:var(--bad);background:var(--bad-bg)}
+.console-shell{display:grid;grid-template-columns:190px minmax(0,1fr);gap:26px;align-items:start}.mode-nav{background:var(--navy);color:var(--chrome-muted);border-radius:11px;padding:16px 9px 12px;position:sticky;top:18px;box-shadow:var(--shadow)}.nav-caption{padding:3px 13px 12px;color:var(--chrome-muted);font-size:10px;letter-spacing:.17em}.mode-nav button{width:100%;display:flex;align-items:center;gap:10px;position:relative;text-align:left;background:none;color:var(--chrome-muted);border:1px solid transparent;border-radius:6px;padding:12px 10px;margin:2px 0;font-weight:550;min-height:61px}.mode-nav button:hover:enabled{background:var(--chrome-hover);border-color:var(--chrome-line)}.mode-nav button.active{background:var(--sea);color:var(--on-accent);border-color:var(--sea);box-shadow:inset 3px 0 var(--on-accent)}.mode-nav button.active.running:after{background:var(--on-accent)}.mode-nav button.running:after{content:"";width:6px;height:6px;border-radius:50%;background:var(--foam);position:absolute;right:8px;top:10px}.mode-nav button.pending{border-color:var(--amber)}.nav-icon{width:25px;color:var(--chrome-muted)}.active .nav-icon{color:var(--on-accent)}.nav-title{display:block;font-size:13px;white-space:nowrap}.nav-sub{display:block;font-size:10px;margin-top:2px;font-weight:400;color:var(--chrome-muted)}.active .nav-sub{color:var(--on-accent)}.nav-separator{border-top:1px solid var(--chrome-line);margin:12px 9px 8px}.nav-note{font-size:10px;line-height:1.65;padding:12px 13px 2px;color:var(--chrome-muted);margin:0}.workspace{min-width:0}.workspace-header{display:flex;justify-content:space-between;gap:16px;align-items:center;margin:0 0 17px}.eyebrow{font-size:10px;letter-spacing:.16em;font-weight:650;color:var(--sea);margin-bottom:3px}#workspaceTitle{font-size:29px;letter-spacing:-.03em;line-height:1.25;margin:0}.mode-state{display:flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:30px;background:var(--surface);padding:7px 12px;font-size:11px;white-space:nowrap}.mode-state.running{color:var(--success);border-color:var(--success-line);background:var(--success-bg)}.mode-state.running .dot{background:var(--success)}.mode-state.pending{color:var(--amber);background:var(--warning-bg);border-color:var(--warning-line)}.mode-state.pending .dot{background:var(--amber)}.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 15px;background:var(--surface);border:1px solid var(--line);border-radius:9px;margin-bottom:19px}.toolbar label{display:flex;align-items:center;gap:10px;font-size:11px}.toolbar select{width:106px;min-height:37px;padding:7px 9px}.toolbar button{min-height:37px;padding:7px 12px;font-size:12px}.toolbar-spacer{flex:1}.context-status{font-size:11px;color:var(--muted)}.subnav{display:flex;gap:5px;border-bottom:1px solid var(--line);margin-bottom:19px}.subnav button{border:0;border-radius:0;background:transparent;padding:8px 16px;font-size:12px;color:var(--muted);border-bottom:3px solid transparent}.subnav button.active{border-bottom-color:var(--sea);color:var(--sea);background:var(--accent-soft)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:20px;margin-bottom:18px;min-width:0}.card-heading{display:flex;align-items:center;gap:12px;margin-bottom:17px;flex-wrap:wrap}.card-heading h2{flex:1}.card-heading .subtitle{font-size:11px;color:var(--muted)}.card-heading button{font-size:11px;padding:7px 11px;min-height:34px}.nav-data{padding:18px 20px 15px;background:var(--surface)}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.metric{min-width:0;border:1px solid var(--line);border-top:2px solid var(--sea);background:var(--card);border-radius:6px;padding:12px 14px}.metric small:first-child{text-transform:uppercase;font-size:9px;letter-spacing:.06em;color:var(--muted);font-weight:600}.metric .value{font:500 24px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:-.06em;margin:6px 0;overflow-wrap:anywhere;color:var(--text)}.metric small:last-child{font-size:9px}.metric.stale{border-top-color:var(--warning-line);background:var(--warning-bg)}.metric.stale .value{color:var(--muted)}.metric.stale small:last-child{color:var(--amber)}.metric:first-child{grid-column:span 1}.metric:first-child .value{font-size:17px;white-space:pre-line;letter-spacing:-.03em}.metric:nth-child(4){background:var(--success-bg);border-color:var(--success-line)}.metrics-note{margin:12px 0 0;font-size:10px;color:var(--muted)}.log-card{padding-bottom:12px}.log-tools{display:flex;align-items:center;gap:13px;flex-wrap:wrap}.log-tools label{font-size:11px}.log-tools button{font-size:11px;min-height:33px;padding:6px 10px}.log{margin:0;background:var(--log-bg);color:var(--log-text);border:1px solid var(--log-line);border-radius:6px;height:280px;overflow:auto;padding:14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;scrollbar-color:var(--log-scroll) var(--log-bg)}.log:empty:before{content:attr(data-empty);color:var(--log-muted)}.log-meta{display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap;padding-top:10px;font:10px ui-monospace,monospace}.log-meta small{font-size:10px}.manual-send{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.manual-send>label:first-child{flex:1;min-width:160px}.manual-send input{font-family:ui-monospace,monospace}.manual-send button{font-size:12px}.group-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.group{padding:13px;background:var(--surface);border:1px solid var(--line);border-radius:7px;min-width:0;display:flex;flex-direction:column;gap:8px}.group label{min-height:27px;font-size:12px}.group button{font-size:11px;min-height:31px;padding:5px 9px;width:100%;background:var(--card)}.group:has(input:checked){border-color:var(--sea);background:var(--accent-soft)}.group:has(input:checked) label{color:var(--text)}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:7px}table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:11px}th,td{text-align:left;padding:12px 13px;border-bottom:1px solid var(--line)}th{font-weight:600;background:var(--surface);color:var(--muted);font-size:10px}td{font-family:ui-monospace,monospace;color:var(--text)}tr:last-child td{border-bottom:0}tr:nth-child(even) td{background:var(--surface)}.table-empty{padding:30px;text-align:center;color:var(--muted);font-size:12px}.settings-grid label{margin-bottom:14px}.settings-grid label.check{margin-bottom:8px}.settings-grid p:last-child{margin-bottom:0}#memory{padding-top:14px;border-top:1px solid var(--line);font:11px/1.9 ui-monospace,monospace;margin:18px 0 0}#terminalLog{height:400px;white-space:pre;font-size:13px;background:var(--log-bg);color:var(--log-rx);overflow-wrap:normal;overflow-y:scroll;overflow-anchor:none;overscroll-behavior:contain;scrollbar-gutter:stable}.terminal-title{color:var(--teal)}footer{display:flex;gap:20px;justify-content:space-between;flex-wrap:wrap;margin:22px 0 6px;color:var(--muted);font-size:10px;padding-top:14px;border-top:1px solid var(--line)}footer strong{font-weight:500;color:var(--muted)}
+#templateDialog{width:min(950px,calc(100% - 28px));max-height:calc(100% - 36px);background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:0;box-shadow:var(--dialog-shadow)}#templateDialog::backdrop{background:var(--overlay);backdrop-filter:blur(2px)}.dialog-head{padding:20px 24px 15px;border-bottom:1px solid var(--line);background:var(--card)}.dialog-head h2{font-size:23px}.dialog-head p{font-size:11px;margin:9px 0 0;color:var(--muted)}#editor{padding:20px 24px}#editorFields{max-height:48vh;overflow:auto;padding:3px 6px 10px 3px}.form-actions{margin-top:17px;padding-top:16px;border-top:1px solid var(--line)}.template-tabs{display:flex;gap:5px;margin-top:15px;flex-wrap:wrap}.template-tabs button{font-size:11px;min-height:31px;padding:5px 12px}.template-tabs button.active{background:var(--sea);color:var(--on-accent);border-color:var(--sea)}#editStatus{font-size:11px}
+@media(max-width:1080px){.console-shell{grid-template-columns:166px minmax(0,1fr);gap:18px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.metric:first-child{grid-column:span 2}.group-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.split{grid-template-columns:1fr}.nav-title{font-size:12px}.nav-icon{width:21px}}
+@media(max-width:760px){main{padding:16px}.topbar{padding:15px 17px;gap:12px}.top-actions{gap:12px}.brand h1{font-size:15px}.brand-sub{font-size:8px}.status{font-size:11px}.console-shell{display:block}.mode-nav{position:static;display:flex;overflow-x:auto;gap:4px;padding:7px;margin-bottom:22px;border-radius:8px;scrollbar-width:thin}.mode-nav button{width:auto;min-width:116px;flex:none;min-height:56px;margin:0;padding:9px 11px}.mode-nav .nav-caption,.nav-note,.nav-separator{display:none}.mode-nav button.active{box-shadow:inset 0 -3px var(--on-accent)}.nav-title{font-size:11px}.nav-sub{font-size:9px}.nav-icon{width:20px}.workspace-header{align-items:start;gap:10px}#workspaceTitle{font-size:25px}.mode-state{white-space:normal;max-width:145px;line-height:1.3;font-size:10px}.toolbar{gap:9px;padding:10px}.toolbar label{font-size:10px}.context-status{display:none}.toolbar-spacer{display:none}.toolbar button{font-size:11px}.card{padding:16px}.card-heading{gap:8px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.metric{padding:10px 11px}.metric .value{font-size:22px}.metric:first-child .value{font-size:17px}.metric:first-child{grid-column:span 1}.metric:nth-child(4){grid-column:auto}.group-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.log-tools{gap:9px}.log-tools label{font-size:10px}.log{font-size:10px;height:265px}.manual-send>label:first-child{flex-basis:100%}.manual-send>label{flex:1}.manual-send button{flex:1}.dialog-head,#editor{padding:17px}#editorFields{grid-template-columns:1fr 1fr;gap:13px}#editorFields label{font-size:11px}#terminalLog{font-size:11px;height:345px}.notice{font-size:11px;margin-bottom:16px}.form-actions button{flex:1}footer{font-size:9px;gap:7px}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+
+.theme-switch{display:flex;align-items:center;gap:3px;padding:3px;border:1px solid var(--chrome-line);border-radius:8px;background:var(--navy-deep)}
+.topbar .theme-switch button{min-height:36px;padding:6px 12px;background:transparent;border-color:transparent;color:var(--chrome-muted)}
+.topbar .theme-switch button[aria-pressed="true"]{background:var(--foam);border-color:var(--foam);color:var(--on-foam)}
+.topbar .theme-switch button:hover:enabled{border-color:var(--foam)}
+.topbar button.primary:hover:enabled{background:var(--foam);color:var(--on-foam)}
+.mode-nav button.active:hover:enabled{background:var(--accent-hover);border-color:var(--sea)}
+.metric:nth-child(3n+2){border-top-color:var(--metric-warm)}.metric:nth-child(3n){border-top-color:var(--success)}
+.metric.stale{border-top-color:var(--warning-line)}
+.log .event-time{color:var(--log-muted)}.log .event-rx{color:var(--log-rx)}.log .event-tx{color:var(--log-tx)}
+input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
+@media(pointer:coarse){.topbar .theme-switch button{min-height:44px}}
+
+.antenna-card{padding:16px 20px}.antenna-grid{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1fr) minmax(0,1.6fr);gap:20px}.antenna-item{min-width:0}.antenna-label{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}.antenna-value{font:500 20px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;margin:5px 0;overflow-wrap:anywhere;color:var(--text)}.antenna-position .antenna-value{font-size:16px;white-space:pre-line}.antenna-status{font-size:10px;color:var(--success)}.antenna-item.stale .antenna-value{color:var(--muted)}.antenna-item.stale .antenna-status{color:var(--amber)}.antenna-item.waiting .antenna-status{color:var(--muted)}.antenna-signal-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.signal-bars{display:flex;align-items:flex-end;gap:3px;height:23px;flex:none}.signal-bars i{display:block;width:5px;background:var(--line);border-radius:1px}.signal-bars i:nth-child(1){height:20%}.signal-bars i:nth-child(2){height:40%}.signal-bars i:nth-child(3){height:60%}.signal-bars i:nth-child(4){height:80%}.signal-bars i:nth-child(5){height:100%}.signal-bars i.lit{background:var(--success)}
+.antenna-network-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 20px;margin-top:15px;padding-top:14px;border-top:1px solid var(--line)}.antenna-network-grid .antenna-value{font-size:16px;letter-spacing:-.03em}
+@media(max-width:760px){.antenna-network-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px}.antenna-network-grid .antenna-value{font-size:15px}.antenna-card{padding:14px 16px}.antenna-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px}.antenna-position{grid-column:1/-1}.antenna-value{font-size:18px}.antenna-position .antenna-value{font-size:15px}.antenna-signal-row{gap:8px}}
+</style></head><body>
+<header class="topbar"><div class="brand"><svg width="39" height="39" viewBox="0 0 40 40" fill="none" aria-hidden="true"><circle cx="20" cy="20" r="17" stroke="currentColor" stroke-width="1.1"/><path d="M20 0v6m0 28v6M0 20h6m28 0h6" stroke="currentColor"/><path d="m25 10-3 13-8 7 3-13z" fill="currentColor"/><path d="m25 10-8 7 5 6z" fill="#fff"/></svg><div><h1>NMEA TESTER</h1><div class="brand-sub">MARINE DIAGNOSTIC CONSOLE</div></div></div><div class="row top-actions"><div class="theme-switch" role="group" aria-label="Web display theme"><button id="webThemeDay" type="button" aria-pressed="true">Day</button><button id="webThemeNight" type="button" aria-pressed="false">Night</button></div><div id="connection" class="status"><span class="dot"></span><span id="connectionText">Local control</span></div><button id="connect" class="primary">Connect to instrument</button><button id="release" hidden>Return to touch control</button></div></header>
+<main><div id="message" class="notice" role="status">Connect to operate the instrument. Its current mode will keep running.</div><fieldset id="controls" disabled><div class="console-shell">
+<nav class="mode-nav" aria-label="Instrument modes"><div class="nav-caption">INSTRUMENTS</div>
+<button class="active" data-mode="rx485"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 17v4h16v-4M3 7h3m12 0h3"/></svg><span><span class="nav-title">Receiver</span><span class="nav-sub">NMEA 0183 · AIS</span></span></button>
+<button data-mode="tx485"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 17v4h16v-4M3 12h3m12 0h3"/></svg><span><span class="nav-title">Generator</span><span class="nav-sub">NMEA 0183 output</span></span></button>
+<button data-mode="rs485_bridge"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 7h17m-4-4 4 4-4 4M21 17H4m4-4-4 4 4 4"/></svg><span><span class="nav-title">RS485 Bridge</span><span class="nav-sub">Serial ↔ network</span></span></button>
+<button data-mode="n2k"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="9" y="2" width="6" height="5" rx="1"/><path d="M12 7v6M5 16v-3h14v3"/><rect x="2" y="16" width="6" height="5" rx="1"/><rect x="16" y="16" width="6" height="5" rx="1"/></svg><span><span class="nav-title">NMEA 2000</span><span class="nav-sub">CAN network</span></span></button>
+<button data-mode="sailor"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 3 3-3 3m6 0h5"/></svg><span><span class="nav-title">SAILOR</span><span class="nav-sub">CAN terminal</span></span></button>
+<div class="nav-separator"></div><button data-tab="settings"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 3v18M12 3v18M19 3v18M2 8h6m1 8h6m1-10h6"/></svg><span><span class="nav-title">Settings</span><span class="nav-sub">Instrument & Wi-Fi</span></span></button><p class="nav-note">Choose an instrument to start its mode.<br>Settings keeps it running.</p></nav>
+<div class="workspace"><div class="workspace-header"><div><div id="workspaceEyebrow" class="eyebrow">RS485 / INPUT</div><h2 id="workspaceTitle">Receiver</h2></div><div id="modeState" class="mode-state"><span class="dot"></span><span id="currentMode">Standby</span></div></div>
+<div class="toolbar"><label id="baudControl">BAUD RATE<select id="baud"><option>2400</option><option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>115200</option></select></label><span id="contextStatus" class="context-status">Select a mode to begin</span><span class="toolbar-spacer"></span><button id="openTemplates">Templates</button><button id="startInstrument" class="primary">Start receiver</button><button id="stopMode" class="danger">Stop instrument</button></div>
+<div id="receiverViews" class="subnav" role="tablist" aria-label="Receiver views"><button class="active" data-view="instruments" role="tab" aria-selected="true">Instruments & stream</button><button data-view="ais" role="tab" aria-selected="false">AIS targets</button></div>
+<section id="monitor" class="pane">
+<div class="card log-card"><div class="card-heading"><h2 id="streamTitle">Received sentences</h2><div class="log-tools"><label id="hexControl" class="check"><input id="hex" type="checkbox">HEX</label><label id="pauseControl" class="check"><input id="pause" type="checkbox">Pause log</label><button id="clearLog">Clear display</button></div></div><pre id="events" class="log" aria-label="Serial data stream" data-empty="Waiting for instrument data…"></pre><div class="log-meta"><small id="rxStats">RX: 0 bytes</small><small id="drops"></small></div><form id="bridgeForm" class="manual-send space" hidden><label>Send raw bytes · HEX<input id="bridgeHex" placeholder="24 47 50 52 4D 43 …" autocomplete="off" maxlength="768"></label><button type="submit">Send bytes</button><small>Up to 256 bytes per message.</small></form></div>
+<section id="generator" class="pane" hidden><div class="card"><div class="card-heading"><h2>Sentence groups</h2><button id="groupsOff">Stop all groups</button></div><div id="groups" class="group-grid"></div><form id="manualForm" class="manual-send space"><label>Manual NMEA sentence<input id="manual" placeholder="$GPHDT,120.0,T" maxlength="82" autocomplete="off"></label><button type="submit">Send sentence</button></form></div></section>
+<div id="navCard" class="card nav-data"><div class="card-heading"><h2>Navigation instruments</h2><span class="subtitle">LIVE DATA</span><button id="refresh">Copy to templates</button></div><div id="metrics" class="metrics"></div><p class="metrics-note">Readings are marked stale after 5 seconds without an update.</p></div>
+</section>
+<section id="ais" class="pane" hidden><div class="card"><div class="card-heading"><h2>AIS targets</h2><small id="aisCount">0 targets</small><button id="aisRefresh">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>MMSI</th><th>Name / callsign</th><th>Latitude</th><th>Longitude</th><th>SOG · kn</th><th>COG · °</th><th>HDG · °</th><th>Status</th><th>Age · s</th></tr></thead><tbody id="aisRows"></tbody></table><div id="aisEmpty" class="table-empty">No targets received yet.</div></div><div class="row space"><button id="aisPrev">← Previous</button><span id="aisPage" class="grow subtle"></span><button id="aisNext">Next →</button></div><p class="subtle space">Decoded from the RS485 input. Targets expire after 10 minutes.</p></div></section>
+<section id="n2k" class="pane" hidden><div class="card"><div class="card-heading"><h2>Network devices</h2><label>CAN BIT RATE<select id="canSpeed"><option>125000</option><option>250000</option><option>500000</option></select></label><button id="n2kRefresh">Refresh</button></div><p class="subtle" id="n2kCount">Waiting for NMEA 2000 traffic.</p><div class="table-wrap"><table><thead><tr><th>SA</th><th>NAME</th><th>Model</th><th>Serial number</th><th>Last PGN</th><th>Packets</th><th>Age · s</th></tr></thead><tbody id="n2kRows"></tbody></table><div id="n2kEmpty" class="table-empty">No devices discovered yet.</div></div></div><div class="card"><div class="card-heading"><h2>CAN traffic</h2><span class="subtitle">NMEA 2000</span></div><pre id="canLog" class="log" aria-label="CAN traffic" data-empty="Waiting for CAN messages…"></pre></div></section>
+<section id="sailor" class="pane" hidden><div class="card antenna-card" id="antennaPanel" aria-label="Antenna status"><div class="antenna-grid"><div class="antenna-item waiting" id="antennaSignalCard"><div class="antenna-label">Signal</div><div class="antenna-signal-row"><div class="antenna-value" id="antennaSignal">—</div><div class="signal-bars" id="antennaSignalBars" role="img" aria-label="Signal unavailable"><i></i><i></i><i></i><i></i><i></i></div></div><div class="antenna-status" id="antennaSignalStatus">Waiting</div></div><div class="antenna-item waiting" id="antennaSerialCard"><div class="antenna-label">Antenna serial</div><div class="antenna-value" id="antennaSerial">—</div><div class="antenna-status" id="antennaSerialStatus">Waiting</div></div><div class="antenna-item antenna-position waiting" id="antennaPositionCard"><div class="antenna-label">Position</div><div class="antenna-value" id="antennaPosition">—</div><div class="antenna-status" id="antennaPositionStatus">Waiting</div></div></div><div class="antenna-network-grid" aria-label="Network status"><div class="antenna-item waiting" id="antennaOceanCard"><div class="antenna-label">Ocean</div><div class="antenna-value" id="antennaOcean">—</div><div class="antenna-status" id="antennaOceanStatus">Waiting</div></div><div class="antenna-item waiting" id="antennaRegistrationCard"><div class="antenna-label">Registration</div><div class="antenna-value" id="antennaRegistration">—</div><div class="antenna-status" id="antennaRegistrationStatus">Waiting</div></div><div class="antenna-item waiting" id="antennaProtocolCard"><div class="antenna-label">Protocol</div><div class="antenna-value" id="antennaProtocol">—</div><div class="antenna-status" id="antennaProtocolStatus">Waiting</div></div><div class="antenna-item waiting" id="antennaChannelCard"><div class="antenna-label">Channel</div><div class="antenna-value" id="antennaChannel">—</div><div class="antenna-status" id="antennaChannelStatus">Waiting</div></div></div></div><div class="card"><div class="card-heading"><h2 class="terminal-title">SAILOR terminal</h2><small id="terminalStatus">Not running</small><button id="terminalLatest" disabled>Latest output</button><button id="terminalClear">Clear display</button></div><pre id="terminalLog" class="log" tabindex="0" aria-label="SAILOR terminal; select to type" data-empty="Waiting for terminal output…"></pre><form id="terminalForm" class="manual-send space"><label>Terminal command<input id="terminalInput" autocomplete="off" maxlength="250"></label><label>Line ending<select id="terminalEnd"><option value="cr">CR</option><option value="crlf">CR+LF</option><option value="none">None</option></select></label><button type="submit">Send</button><button type="button" id="terminalEsc">Esc</button><button type="button" id="terminalCtrlC">Ctrl+C</button></form><p class="subtle space">Scroll up to read earlier output (up to 2,000 lines). Select the terminal to type; use Shift+Page Up / Page Down to scroll.</p></div></section>
+<section id="settings" class="pane settings-grid" hidden><div class="split"><form id="settingsForm" class="card"><div class="card-heading"><h2>Instrument preferences</h2></div><div class="grid"><label>NMEA output version<select id="version"><option value="0">2.1</option><option value="1">2.3</option><option value="2">4.0</option><option value="3">4.10</option><option value="4">4.11</option></select></label><label>Instrument LCD theme<select id="theme"><option value="0">Metal</option><option value="1">Color</option><option value="2">B/W</option></select></label></div><label class="check"><input id="rotated" type="checkbox">Rotate instrument LCD by 180°</label><button class="primary space" type="submit">Save preferences</button><p id="memory" class="subtle"></p></form><div class="card"><div class="card-heading"><h2>Wi-Fi connection</h2></div><p id="networkStatus" class="muted"></p><p class="subtle">Changing networks may disconnect this console. The instrument keeps running and returns to touch control within 60 seconds if communication is lost.</p><div class="row"><button id="wifiAP">Use saved access point</button><button id="wifiReconnect">Connect to router</button><button id="wifiDisconnect">Disconnect from router</button><button id="wifiOff" class="danger">Turn Wi-Fi off</button></div></div></div><div class="split"><form id="apForm" class="card"><div class="card-heading"><h2>Instrument access point</h2></div><label>Network name · SSID<input id="apSsid" maxlength="32" required></label><label>New password<input id="apPass" type="password" maxlength="63" autocomplete="new-password" placeholder="Leave blank to keep the password"></label><label class="check"><input id="apOpen" type="checkbox">Open network · no password</label><label>IPv4 address<input id="apIp" required placeholder="192.168.4.1"></label><button class="space" type="submit">Save access point</button></form><form id="staForm" class="card"><div class="card-heading"><h2>Connect to a router</h2><button id="scan" type="button">Scan networks</button></div><label>Available networks<select id="networks"><option value="">Choose a network or enter its name</option></select></label><label>Network name · SSID<input id="staSsid" maxlength="32" required></label><label>Password<input id="staPass" type="password" maxlength="63" autocomplete="new-password" placeholder="Leave blank to keep the password"></label><label class="check"><input id="staOpen" type="checkbox">This network has no password</label><button class="space" type="submit">Save & connect</button></form></div></section>
+</div></div>
+<dialog id="templateDialog" aria-labelledby="editorTitle"><div class="dialog-head"><div class="row"><div class="grow"><div class="eyebrow">NMEA SENTENCE CONFIGURATION</div><h2 id="editorTitle">Templates</h2></div><button id="closeEditor" type="button">Close</button></div><p>Editing templates keeps the current instrument running. Only changed fields are applied.</p><div class="template-tabs" aria-label="Template group"><button type="button" data-template="gps">GPS</button><button type="button" data-template="gyro">GYRO</button><button type="button" data-template="log">LOG</button><button type="button" data-template="echo">ECHO</button><button type="button" data-template="weather">WEATHER</button></div></div><form id="editor" hidden><div id="editorFields" class="grid"></div><p class="subtle">UTC: HHMMSS · Date: DDMMYY · Position: DDMM.MMMM / DDDMM.MMMM</p><div class="row form-actions"><button class="primary" type="submit">Apply changes</button><button type="button" id="saveTemplates">Save to flash</button><button id="reloadTemplate" type="button">Reload</button><small id="editStatus"></small></div></form></dialog>
+</fieldset><footer><strong>NMEA TESTER · MARINE CONSOLE</strong><span>The instrument's screen button always returns control to touch.</span></footer></main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id), groups=['gps','gyro','log','echo','weather'], groupNames=['GPS','GYRO','LOG','ECHO','WEATHER'];
+// Browser appearance is independent of the instrument LCD and control session.
+function setWebTheme(theme,save=false){
+theme=theme==='night'?'night':'day';document.documentElement.dataset.webTheme=theme;
+$('webThemeDay').setAttribute('aria-pressed',String(theme==='day'));
+$('webThemeNight').setAttribute('aria-pressed',String(theme==='night'));
+if(save){try{localStorage.setItem('nmea-web-theme',theme);}catch{}}
+}
+$('webThemeDay').onclick=()=>setWebTheme('day',true);
+$('webThemeNight').onclick=()=>setWebTheme('night',true);
+setWebTheme(document.documentElement.dataset.webTheme);
+let ws=null, token=sessionStorage.getItem('nmea-token')||'', nextId=1, active=false, desired=false, retry=null, reconnectUntil=0, lastMessage=0, currentTab='rx485', state={}, editor=null, dirty=new Set(), aisOffset=0, aisTotal=0, pausedLog=false;
+const pending=new Map(), logBuffers={rx485:[],tx485:[],rs485_bridge:[]}, logDrops={}, metricNodes={}, lastSequences={};
+let receiverView='instruments', modeBusy=false, pendingMode=null, modeAcknowledged=false, modeTimer=null, sessionEpoch=0, hasState=false, focusOnState=false;
+const modes={rx485:{title:'Receiver',eyebrow:'RS485 / INPUT',start:'Start receiver'},tx485:{title:'Generator',eyebrow:'RS485 / OUTPUT',start:'Start generator'},rs485_bridge:{title:'RS485 Bridge',eyebrow:'RS485 / NETWORK',start:'Start bridge'},n2k:{title:'NMEA 2000',eyebrow:'CAN / NETWORK',start:'Start NMEA 2000'},sailor:{title:'SAILOR',eyebrow:'CAN / TERMINAL',start:'Start SAILOR'},settings:{title:'Settings',eyebrow:'INSTRUMENT / PREFERENCES'}};
+const templateDrafts=new Map();
+let requestedTemplate=null,templateSaving=false;
+let terminalSequence=-1;
+function receipt(op,args){if(active&&ws&&ws.readyState===1)ws.send(JSON.stringify({op,id:0,token,...args}));}
+function message(text,error=false){$('message').textContent=text;$('message').classList.toggle('error',error);}
+function connection(text){
+$('connectionText').textContent=text;$('connection').classList.toggle('online',active);
+if(!active){hasState=false;modeBusy=false;pendingMode=null;modeAcknowledged=false;clearTimeout(modeTimer);sessionEpoch++;if($('templateDialog').open)$('templateDialog').close();}
+$('controls').disabled=!active||!hasState;$('connect').hidden=active||desired;$('release').hidden=!active&&!desired;renderChrome();
+}
+function stopSession(text,error=false){desired=false;active=false;token='';sessionStorage.removeItem('nmea-token');clearTimeout(retry);retry=null;for(const p of pending.values())p.reject(new Error("Connection closed"));pending.clear();if(ws){const old=ws;ws=null;old.close();}connection("Local control");message(text,error);}
+function openSocket(){if(!desired)return;clearTimeout(retry);const socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');ws=socket;connection(token?"Reconnecting…":"Connecting…");socket.onopen=()=>{if(ws!==socket)return;socket.send(JSON.stringify({op:'claim',id:0,token}));};socket.onmessage=e=>{if(ws!==socket)return;lastMessage=Date.now();try{receive(JSON.parse(e.data));}catch(err){message("Response error: "+err.message,true);}};socket.onerror=()=>socket.close();socket.onclose=()=>{if(ws!==socket)return;ws=null;active=false;for(const p of pending.values())p.reject(new Error("Connection lost; command outcome unknown"));pending.clear();if(!desired)return;if(!token){stopSession("Could not connect. Check the device network.",true);return;}if(!reconnectUntil)reconnectUntil=Date.now()+60000;if(Date.now()>=reconnectUntil){stopSession("Reconnect window expired. Connect again.",true);return;}connection("Connection lost · reconnecting");message("The device is still running. Reconnecting…");retry=setTimeout(openSocket,1500);};}
+function cmd(op,args={}){return new Promise((resolve,reject)=>{if(!active||!ws||ws.readyState!==1){reject(new Error("Device control is unavailable"));return;}const id=nextId++;pending.set(id,{resolve,reject,time:Date.now(),op});ws.send(JSON.stringify({op,id,token,...args}));});}
+function action(op,args={},success=''){return cmd(op,args).then(()=>{if(success)message(success);return true;}).catch(err=>{message(err.message,true);return false;});}
+function receive(m){switch(m.type){case 'claimed':token=m.token;sessionStorage.setItem('nmea-token',token);nextId=m.next_id;active=true;hasState=false;focusOnState=true;sessionEpoch++;reconnectUntil=0;connection("Web control");message("Connected. Use the return button on the device to restore touch control.");requestTab();break;
+case 'ack':if(m.id===0){if(!m.ok){stopSession("Another browser has control, or this session has ended. Select “Connect” to start a new session.",true);}break;}const p=pending.get(m.id);if(p){pending.delete(m.id);m.ok?p.resolve():p.reject(new Error(p.op+': '+m.error));}break;
+case 'released':stopSession(m.reason==='local_button'?"Local control restored using the device button.":"Local control restored.");break;
+case 'state':renderState(m);break;case 'events':renderEvents(m);break;case 'template':renderEditor(m);break;case 'ais':renderAIS(m);break;case 'n2k':renderN2K(m);break;case 'settings':renderSettings(m);break;case 'scan':renderScan(m);break;case 'terminal':if(m.seq!==terminalSequence){terminalOutput(m.hex);terminalSequence=m.seq;}receipt('terminal_ack',{seq:m.seq});break;case 'network_change':message("The device is changing networks. If its IP address changes, open the page at the new address.");break;}}
+$('connect').onclick=()=>{terminalSequence=-1;for(const key of Object.keys(lastSequences))delete lastSequences[key];token='';sessionStorage.removeItem('nmea-token');desired=true;reconnectUntil=0;openSocket();};$('release').onclick=()=>{if(active&&ws)ws.send(JSON.stringify({op:'release',id:nextId++,token}));stopSession("Web connection closed. If the release command was not received, touch control will return after the connection timeout.");};
+setInterval(()=>{if(active&&ws&&ws.readyState===1){ws.send(JSON.stringify({op:'heartbeat',id:0,token}));if(Date.now()-lastMessage>15000)ws.close();}for(const [id,p]of pending){if(Date.now()-p.time>12000){pending.delete(id);p.reject(new Error("No acknowledgement for "+p.op+". Check device status before retrying."));}}},5000);
+// Browsing a workspace never sends a mode command. Only an explicit mode click does.
+function showWorkspace(name){
+currentTab=name;
+const rx=name==='rx485',tx=name==='tx485',bridge=name==='rs485_bridge';
+$('generator').hidden=!tx;$('monitor').hidden=!(tx||bridge||(rx&&receiverView==='instruments'));
+$('navCard').hidden=bridge;$('ais').hidden=!(rx&&receiverView==='ais');
+for(const id of ['n2k','sailor','settings'])$(id).hidden=name!==id;
+$('receiverViews').hidden=!rx;$('bridgeForm').hidden=!bridge;
+$('hexControl').hidden=$('pauseControl').hidden=!rx;
+$('baudControl').hidden=!['rx485','tx485','rs485_bridge','sailor'].includes(name);
+$('workspaceTitle').textContent=modes[name].title;$('workspaceEyebrow').textContent=modes[name].eyebrow;
+$('streamTitle').textContent=tx?'Transmitted sentences':bridge?'Bridge traffic':'Received sentences';
+document.querySelectorAll('.mode-nav button').forEach(n=>{const selected=(n.dataset.mode||n.dataset.tab)===name;n.classList.toggle('active',selected);if(selected)n.setAttribute('aria-current','page');else n.removeAttribute('aria-current');});
+document.querySelectorAll('[data-view]').forEach(n=>{const selected=n.dataset.view===receiverView;n.classList.toggle('active',selected);n.setAttribute('aria-selected',String(selected));});
+renderChrome();showLog();if(name==='sailor')terminalRestoreView();requestTab();
+}
+function renderChrome(){
+const ready=active&&hasState,working=ready&&!modeBusy&&state.mode===currentTab;
+$('controls').disabled=!ready;
+const actual=modes[state.mode]?.title||'Standby';
+$('currentMode').textContent=ready?actual:state.mode?'Last mode: '+actual:'Standby';
+$('modeState').classList.toggle('running',ready&&state.mode!=='idle');
+$('modeState').classList.toggle('pending',ready&&modeBusy);
+document.querySelectorAll('[data-mode]').forEach(n=>{n.disabled=!ready||modeBusy;n.classList.toggle('running',ready&&state.mode===n.dataset.mode);n.classList.toggle('pending',modeBusy&&pendingMode===n.dataset.mode);});
+$('startInstrument').hidden=currentTab==='settings'||state.mode===currentTab||modeBusy;
+$('startInstrument').textContent=modes[currentTab].start||'Start instrument';
+$('startInstrument').disabled=!ready||modeBusy;
+$('stopMode').disabled=!ready||modeBusy||state.mode==='idle';
+$('contextStatus').textContent=!ready?(desired?'Waiting for instrument…':'Connect to begin'):modeBusy?(pendingMode==='idle'?'Stopping instrument…':'Switching to '+modes[pendingMode].title+'…'):currentTab==='settings'?(state.mode==='idle'?'Instrument in standby':actual+' continues running'):working?'Mode running':state.mode==='idle'?'Instrument in standby':actual+' is running';
+$('baud').disabled=!working||!['rx485','tx485','rs485_bridge','sailor'].includes(currentTab);
+$('hex').disabled=$('pause').disabled=!working||currentTab!=='rx485';
+$('canSpeed').disabled=$('n2kRefresh').disabled=!working||currentTab!=='n2k';
+$('refresh').disabled=!working||!['rx485','tx485'].includes(currentTab);
+$('groupsOff').disabled=!working||currentTab!=='tx485';
+groups.forEach(g=>{const input=$('active-'+g);if(input)input.disabled=!working||currentTab!=='tx485';});
+for(const [id,mode]of [['manualForm','tx485'],['bridgeForm','rs485_bridge'],['terminalForm','sailor']])$(id).querySelectorAll('button,input,select').forEach(n=>n.disabled=!working||currentTab!==mode);
+$('aisRefresh').disabled=!working||currentTab!=='rx485';
+$('aisPrev').disabled=!working||currentTab!=='rx485'||!aisOffset;
+$('aisNext').disabled=!working||currentTab!=='rx485'||aisOffset+24>=aisTotal;
+renderAntenna();
+}
+function endModeTransition(){clearTimeout(modeTimer);modeBusy=false;pendingMode=null;modeAcknowledged=false;renderChrome();}
+function confirmModeTransition(){
+if(!modeBusy||!modeAcknowledged||state.mode!==pendingMode)return;
+const selected=pendingMode;endModeTransition();message(selected==='idle'?'Instrument stopped.':modes[selected].title+' is running.');requestTab();
+}
+async function changeMode(mode){
+if(!active||!hasState||modeBusy||state.mode===mode)return;
+const epoch=sessionEpoch;modeBusy=true;pendingMode=mode;modeAcknowledged=false;renderChrome();
+modeTimer=setTimeout(()=>{if(epoch!==sessionEpoch||!modeBusy)return;endModeTransition();message('Mode change was not confirmed. Check instrument status before retrying.',true);},12000);
+try{await cmd('mode',{mode});if(epoch===sessionEpoch){modeAcknowledged=true;confirmModeTransition();}}
+catch(err){if(epoch===sessionEpoch){endModeTransition();message(err.message,true);}}
+}
+function selectMode(mode){if(!active||!hasState||modeBusy)return;showWorkspace(mode);changeMode(mode);}
+document.querySelectorAll('[data-mode]').forEach(n=>n.onclick=()=>selectMode(n.dataset.mode));
+document.querySelectorAll('[data-tab]').forEach(n=>n.onclick=()=>showWorkspace(n.dataset.tab));
+document.querySelectorAll('[data-view]').forEach(n=>n.onclick=()=>{receiverView=n.dataset.view;showWorkspace('rx485');});
+function requestTab(){if(!active||!hasState)return;if(currentTab==='rx485'&&receiverView==='ais'&&state.mode==='rx485')action('ais_get',{offset:aisOffset});if(currentTab==='n2k'&&state.mode==='n2k')action('n2k_get');if(currentTab==='settings')action('settings_get');}
+setInterval(()=>{if(active&&hasState&&!document.hidden){if(currentTab==='rx485'&&receiverView==='ais'&&state.mode==='rx485')action('ais_get',{offset:aisOffset});if(currentTab==='n2k'&&state.mode==='n2k')action('n2k_get');}},2000);
+
+function setIdleValue(id,value){const el=$(id);if(document.activeElement!==el&&!el.dataset.dirty)el.value=String(value);}
+['version','theme','rotated'].forEach(id=>$(id).onchange=()=>$(id).dataset.dirty='1');
+const metrics=[['position',"Position",1],['utc','UTC',2],['date',"Date",4],['sog','SOG / COG',8],['gyro',"Gyro heading",16],['log',"Speed through water",32],['depth',"Depth",64],['wind',"Wind",128],['temp',"Water temperature",256]];
+for(const [id,label,bit]of metrics){const el=document.createElement('div');el.className='metric';const name=document.createElement('small');name.textContent=label;const val=document.createElement('div');val.className='value';val.textContent='—';const status=document.createElement('small');status.textContent="No data";el.append(name,val,status);$('metrics').append(el);metricNodes[id]={el,val,status,bit};}
+const fmt=(n,d=1)=>Number.isFinite(n)?n.toFixed(d):'—';
+function coordinate(value,direction){
+if(!Number.isFinite(value))return '—';const total=Math.round(Math.abs(value)*60000),deg=Math.floor(total/60000),minutes=((total%60000)/1000).toFixed(3).padStart(6,'0');return deg+'° '+minutes+'′ '+(direction||'');
+}
+function renderAntenna(){
+const a=state.mode==='sailor'?(state.antenna||{}):{},connected=active&&hasState&&state.mode==='sailor',online=connected&&!!a.online;
+const signal=!!a.signal_valid&&Number.isFinite(a.cn0_dbhz),identity=!!a.identity_valid&&typeof a.serial==='string'&&a.serial.length>0;
+const position=!!a.position_valid&&Number.isFinite(a.latitude)&&Math.abs(a.latitude)<=90&&Number.isFinite(a.longitude)&&Math.abs(a.longitude)<=180;
+const fresh=position&&online&&!!a.position_fresh;
+const bars=signal&&online&&Number.isInteger(a.signal_bars)?Math.max(0,Math.min(5,a.signal_bars)):0;
+$('antennaSignal').textContent=signal?a.cn0_dbhz+' dBHz':'—';
+$('antennaSerial').textContent=identity?a.serial:'—';
+$('antennaPosition').textContent=position?coordinate(a.latitude,a.latitude<0?'S':'N')+'\n'+coordinate(a.longitude,a.longitude<0?'W':'E'):'—';
+$('antennaSignalBars').setAttribute('aria-label',signal&&online?bars+' of 5 signal bars':'Signal unavailable');
+$('antennaSignalBars').querySelectorAll('i').forEach((bar,i)=>bar.classList.toggle('lit',i<bars));
+for(const name of ['Ocean','Registration','Protocol','Channel']){
+const key=name.toLowerCase(),known=typeof a[key]==='string'&&a[key].trim().length>0,live=known&&online&&a[key+'_fresh']===true;
+$('antenna'+name).textContent=known?a[key]:'—';
+$('antenna'+name+'Status').textContent=!known?'Waiting':live?'Live':'Stale';
+$('antenna'+name+'Card').classList.toggle('waiting',!known);$('antenna'+name+'Card').classList.toggle('stale',known&&!live);
+}
+for(const [name,valid,live]of [['Signal',signal,signal&&online],['Serial',identity,identity&&online],['Position',position,fresh]]){
+const known=valid||(name==='Signal'&&Number.isFinite(a.signal_age_ms));
+const status=!known?'Waiting':live?(name==='Serial'?'Identified':'Live'):(name==='Serial'?'Last known':'Stale');
+$('antenna'+name+'Status').textContent=status;
+$('antenna'+name+'Card').classList.toggle('waiting',!known);$('antenna'+name+'Card').classList.toggle('stale',known&&!live);
+}
+}
+function renderState(m){
+const previous=state.mode,first=!hasState,changed=previous!==m.mode,hexChanged=!!state.hex!==!!m.hex;state=m;hasState=true;
+if(focusOnState){focusOnState=false;if(currentTab!=='settings'&&modes[m.mode]&&m.mode!=='settings')showWorkspace(m.mode);}
+else if(changed&&!modeBusy&&currentTab===previous&&modes[m.mode]&&m.mode!=='settings')showWorkspace(m.mode);
+setIdleValue('baud',m.baud);setIdleValue('canSpeed',m.can_speed||250000);
+$('hex').checked=!!m.hex;$('pause').checked=!!m.paused;pausedLog=!!m.paused;
+$('rxStats').textContent='RX: '+(m.rx_bytes||0)+' bytes'+(m.rx_lines!==undefined?' · '+m.rx_lines+' lines':'')+(m.tx_bytes!==undefined?' · TX: '+m.tx_bytes+' bytes':'');
+groups.forEach((g,i)=>{$('active-'+g).checked=!!(m.groups||[])[i];});
+const n=m.nav||{},time=String(n.time||'').replace(/^(\d{2})(\d{2})(\d{2})$/,'$1:$2:$3');
+const values={position:coordinate(n.lat,n.lat_dir)+'\n'+coordinate(n.lon,n.lon_dir),utc:time||'—',date:n.date||'—',sog:fmt(n.gps_sog)+' kn / '+fmt(n.gps_cog)+'°',gyro:fmt(n.gyro_heading)+'°',log:fmt(n.log_speed)+' kn',depth:fmt(n.depth)+' m',wind:fmt(n.wind_speed)+' kn / '+fmt(n.wind_angle)+'° '+(n.wind_true?'T':'R'),temp:fmt(n.temp_c)+' °C'};
+for(const [id,node]of Object.entries(metricNodes)){const valid=!!(n.valid_fields&node.bit),stale=!!(n.stale_fields&node.bit);node.val.textContent=valid?values[id]:'—';node.el.classList.toggle('stale',!valid||stale);node.status.textContent=!valid?'No data':stale?'Stale':'Live';}
+setIdleValue('version',m.version);setIdleValue('theme',m.theme);if(!$('rotated').dataset.dirty)$('rotated').checked=m.rotated;
+$('memory').textContent='Free internal RAM: '+Math.round(m.internal_free/1024)+' KiB · minimum free: '+Math.round(m.internal_min/1024)+' KiB · PSRAM: '+(m.psram_free/1048576).toFixed(2)+' MiB';
+$('networkStatus').textContent=(m.wifi_mode===0?'Access point':'Wi-Fi client')+' · IP '+m.ip;
+$('terminalStatus').textContent=m.mode==='sailor'?(m.terminal_ready?'Terminal ready':'Establishing connection…')+' · dropped '+(m.terminal_dropped||0)+' bytes':'Start SAILOR mode';
+renderChrome();confirmModeTransition();if(hexChanged&&currentTab==='rx485')showLog();if(changed||first)requestTab();
+}
+$('startInstrument').onclick=()=>selectMode(currentTab);$('stopMode').onclick=()=>changeMode('idle');
+$('baud').onchange=()=>action('baud',{value:+$('baud').value});$('canSpeed').onchange=()=>action('can_speed',{value:+$('canSpeed').value});$('hex').onchange=()=>action('hex',{value:$('hex').checked});$('pause').onchange=()=>action('pause',{value:$('pause').checked});$('refresh').onclick=()=>action('refresh',{},"Current navigation data copied to templates and saved.");
+function showLog(){
+const el=$('events'),bottom=el.scrollTop+el.clientHeight>=el.scrollHeight-30;
+const fragment=document.createDocumentFragment();
+// The receiver emits both formats so navigation/AIS decoding continues in HEX mode.
+const rxKind=state.hex?2:1; // RS485_EVENT_HEX / RS485_EVENT_NMEA
+const lines=(logBuffers[currentTab]||[]).filter(line=>currentTab!=='rx485'||line.kind===rxKind);
+for(const [i,line]of lines.entries()){
+if(i)fragment.append(document.createTextNode('\n'));
+const time=document.createElement('span');time.className='event-time';time.textContent=line.time;
+const text=document.createElement('span');text.className=line.tx?'event-tx':'event-rx';text.textContent=line.text;
+fragment.append(time,text);
+}
+el.replaceChildren(fragment);if(bottom)el.scrollTop=el.scrollHeight;
+$('drops').textContent=logDrops[currentTab]?'Dropped in the latest batch: '+logDrops[currentTab]:'';
+}
+function renderEvents(m){
+receipt('events_ack',{mode:m.mode,cursor:m.cursor});if(m.mode==='rx485'&&pausedLog)return;
+const lines=logBuffers[m.mode];if(!lines)return;
+for(const e of m.items){const last=lastSequences[m.mode];if(last!==undefined&&((e.seq-last)>>>0)>0x7fffffff)continue;if(e.seq===last)continue;lastSequences[m.mode]=e.seq;
+const line=e.hex?((e.kind===4?'RX':'TX')+' '+(e.hex.match(/../g)||[]).join(' ')):e.text;
+lines.push({kind:e.kind,time:'['+(e.ms/1000).toFixed(3)+'] ',text:line.trimEnd(),tx:e.kind===3||e.kind===5||m.mode==='tx485'});}
+if(lines.length>300)lines.splice(0,lines.length-300);if(m.dropped)logDrops[m.mode]=m.dropped;if(currentTab===m.mode)showLog();
+}
+$('clearLog').onclick=()=>{if(logBuffers[currentTab])logBuffers[currentTab].length=0;delete logDrops[currentTab];showLog();};
+
+function parseHex(text){const hex=text.replace(/\s/g,'');if(!/^(?:[0-9a-fA-F]{2})+$/.test(hex))throw new Error("Enter complete hexadecimal byte pairs");return hex;}
+$('bridgeForm').onsubmit=e=>{e.preventDefault();try{const hex=parseHex($('bridgeHex').value);if(hex.length>512)throw new Error("Maximum 256 bytes");action('bridge_write',{hex});}catch(err){message(err.message,true);}};
+$('manualForm').onsubmit=e=>{e.preventDefault();action('send',{text:$('manual').value.trim()});};
+for(let i=0;i<groups.length;i++){const g=groups[i],el=document.createElement('div');el.className='group';const label=document.createElement('label');label.className='check';const check=document.createElement('input');check.type='checkbox';check.id='active-'+g;check.onchange=()=>action('group',{group:g,value:check.checked});label.append(check,document.createTextNode(groupNames[i]));const edit=document.createElement('button');edit.textContent='Edit';edit.setAttribute('aria-label','Edit '+groupNames[i]);edit.onclick=()=>openTemplate(g);el.append(label,edit);$('groups').append(el);}
+$('groupsOff').onclick=()=>Promise.all(groups.map(group=>action('group',{group,value:false})));
+const labels={time_utc:"UTC time (HHMMSS)",date_dmy:"Date (DDMMYY)",lat:"Latitude (DDMM.MMMM)",lon:"Longitude (DDDMM.MMMM)",lat_dir:"Latitude hemisphere",lon_dir:"Longitude hemisphere",sog_kn:"Speed over ground, kn",cog_deg:"Course over ground, °",track_true_deg:"True track, °",fix:"Data status (A/V)",sats:"Satellite count",talker_id:'Talker ID',prefix:"Sentence prefix",add_crc:"Append checksum",rate_hz:"Update rate, Hz",heading_true_deg:"True heading, °",heading_mag_deg:"Magnetic heading, °",deviation_deg:"Compass deviation, °",dev_dir:"Deviation direction",variation_deg:"Magnetic variation, °",var_dir:"Variation direction",rot_deg_min:"Rate of turn, °/min",rot_status:"Rate of turn status",follow_rot:"Apply rate of turn to heading",hdg_water_true_deg:"True heading, °",hdg_water_mag_deg:"Magnetic heading, °",water_speed_kn:"Speed through water, kn",water_speed_kph:"Speed through water, km/h",dist_total_nm:"Total distance, nautical miles",dist_trip_nm:"Trip distance, nautical miles",stern_speed_kn:"Stern transverse speed, kn",depth_ft:"Depth, ft",depth_m:"Depth, m",depth_fathom:"Depth, fathoms",keel_offset_m:"Keel offset, m",wind_dir_true_deg:"Wind direction, true (°)",wind_dir_mag_deg:"Wind direction, magnetic (°)",wind_speed_kn:"Wind speed, kn",wind_speed_ms:"Wind speed, m/s",wind_speed_kph:"Wind speed, km/h",wind_angle_rel_deg:"Relative wind angle, °",rel_ref:"Wind reference (relative/true)",wind_side:"Wind side (L/R)",water_temp_C:"Water temperature, °C"};
+function stashTemplate(){
+if(!editor||!dirty.size)return;
+const values={};for(const f of editor.fields){if(!dirty.has(f.name))continue;const input=$('field-'+f.name);values[f.name]=f.kind==='b'?input.checked:input.value;}
+templateDrafts.set(editor.group,values);
+}
+function openTemplate(group){
+if(!active||!hasState)return;stashTemplate();requestedTemplate=group;
+if(!$('templateDialog').open)$('templateDialog').showModal();
+document.querySelectorAll('[data-template]').forEach(n=>n.classList.toggle('active',n.dataset.template===group));
+if(editor&&editor.group===group&&dirty.size){$('editor').hidden=false;return;}
+editor=null;dirty.clear();$('editor').hidden=true;$('editorTitle').textContent=group.toUpperCase()+' · Loading…';action('template_get',{group});
+}
+$('openTemplates').onclick=()=>openTemplate(requestedTemplate||'gps');
+document.querySelectorAll('[data-template]').forEach(n=>n.onclick=()=>openTemplate(n.dataset.template));
+function renderEditor(m){
+if(m.group!==requestedTemplate)return;
+if(editor&&editor.group===m.group&&dirty.size)return;
+editor=m;dirty.clear();$('editor').hidden=false;$('editorTitle').textContent=m.group.toUpperCase()+' · Templates';
+$('editorFields').replaceChildren();$('editStatus').textContent='';
+const draft=templateDrafts.get(m.group)||{};
+for(const f of m.fields){
+const label=document.createElement('label');label.textContent=labels[f.name]||(f.name.startsWith('send_')?'Transmit '+f.name.slice(5).toUpperCase():f.name);
+let input;if(f.kind==='c'){input=document.createElement('select');for(const c of f.options){const option=document.createElement('option');option.value=option.textContent=c;input.append(option);}}
+else{input=document.createElement('input');input.type=f.kind==='b'?'checkbox':['n','u'].includes(f.kind)?'number':'text';if(input.type==='number'){input.min=f.min;input.max=f.max;input.step=f.kind==='u'?'1':'any';input.required=true;}if(f.kind==='s'){input.maxLength=f.size-1;input.required=true;}}
+input.id='field-'+f.name;const value=Object.hasOwn(draft,f.name)?draft[f.name]:m.values[f.name];if(Object.hasOwn(draft,f.name))dirty.add(f.name);
+if(f.kind==='b'){input.checked=value;label.className='check';}else input.value=value;
+input.oninput=()=>{dirty.add(f.name);$('editStatus').textContent='Changed fields: '+dirty.size;};label.append(input);$('editorFields').append(label);
+}
+if(dirty.size)$('editStatus').textContent='Changed fields: '+dirty.size;
+}
+
+function fieldValue(field,input){return field.kind==='b'?input.checked:['n','u'].includes(field.kind)?(input.value===''?NaN:+input.value):input.value;}
+$('editor').onsubmit=async e=>{
+e.preventDefault();if(!editor||templateSaving)return;
+const fields=editor.fields,values={};for(const f of fields){if(dirty.has(f.name))values[f.name]=fieldValue(f,$('field-'+f.name));}
+if(!Object.keys(values).length)return;
+const group=editor.group,epoch=sessionEpoch;templateSaving=true;$('editor').querySelector('[type=submit]').disabled=true;
+try{
+if(await action('template_patch',{group,values},'Template changes applied.')){
+if(epoch!==sessionEpoch)return;
+if(editor&&editor.group===group){
+for(const f of fields)if(Object.hasOwn(values,f.name)&&fieldValue(f,$('field-'+f.name))===values[f.name])dirty.delete(f.name);
+templateDrafts.delete(group);stashTemplate();
+$('editStatus').textContent=dirty.size?'Changed fields: '+dirty.size:'Changes applied';
+if(!dirty.size)action('template_get',{group});
+}else{
+const draft=templateDrafts.get(group);
+if(draft){for(const f of fields){if(!Object.hasOwn(values,f.name)||!Object.hasOwn(draft,f.name))continue;const value=['n','u'].includes(f.kind)?(draft[f.name]===''?NaN:+draft[f.name]):draft[f.name];if(value===values[f.name])delete draft[f.name];}if(!Object.keys(draft).length)templateDrafts.delete(group);}
+}
+}
+}finally{templateSaving=false;$('editor').querySelector('[type=submit]').disabled=false;}
+};
+$('reloadTemplate').onclick=()=>{if(editor){templateDrafts.delete(editor.group);dirty.clear();action('template_get',{group:editor.group});}};$('closeEditor').onclick=()=>{$('templateDialog').close();};$('saveTemplates').onclick=()=>action('save',{},"Templates saved to flash memory.");
+function tableRow(parent,values){const row=document.createElement('tr');for(const value of values){const td=document.createElement('td');td.textContent=value;row.append(td);}parent.append(row);}
+function renderAIS(m){aisTotal=m.total;aisOffset=m.offset;$('aisEmpty').hidden=!!m.targets.length;$('aisRows').replaceChildren();for(const t of m.targets)tableRow($('aisRows'),[t.mmsi,(t.name||'—')+' / '+(t.call||'—'),fmt(t.lat,5),fmt(t.lon,5),fmt(t.sog),fmt(t.cog),t.heading<360?t.heading:'—',t.status,Math.floor(t.age_ms/1000)]);$('aisCount').textContent="Targets: "+m.total;$('aisPage').textContent=m.total?(m.offset+1)+'–'+Math.min(m.offset+24,m.total)+" of "+m.total:"No targets";$('aisPrev').disabled=!m.offset;$('aisNext').disabled=m.offset+24>=m.total;renderChrome();}
+$('aisRefresh').onclick=()=>action('ais_get',{offset:aisOffset});$('aisPrev').onclick=()=>{aisOffset=Math.max(0,aisOffset-24);action('ais_get',{offset:aisOffset});};$('aisNext').onclick=()=>{aisOffset+=24;action('ais_get',{offset:aisOffset});};
+function renderN2K(m){$('n2kEmpty').hidden=!!m.nodes.length;$('n2kRows').replaceChildren();for(const n of m.nodes)tableRow($('n2kRows'),[n.sa,n.name,n.model||'—',n.serial||'—',n.pgn,n.count,Math.floor(n.age_ms/1000)]);$('n2kCount').textContent="Received: "+m.rx_count+" · devices: "+m.nodes.length+" · discarded from log: "+m.dropped;$('canLog').textContent=m.traffic.join('\n');$('canLog').scrollTop=$('canLog').scrollHeight;}
+$('n2kRefresh').onclick=()=>action('n2k_get');
+/* Small bounded VT100 screen for the SAILOR ASCII console. Escape sequences
+   can span WebSocket packets; rendering always uses textContent. */
+const TERMINAL_HISTORY_LIMIT=2000;
+const terminal={rows:Array.from({length:24},()=>Array(80).fill(' ')),history:[],discarded:0,follow:true,viewTop:0,lineHeight:23.4,x:0,y:0,saved:[0,0],escape:'',osc:false,top:0,bottom:23};
+function terminalReset(){terminal.rows=Array.from({length:24},()=>Array(80).fill(' '));terminal.history=[];terminal.discarded=0;terminal.follow=true;terminal.viewTop=0;terminal.saved=[0,0];terminal.x=terminal.y=0;terminal.escape='';terminal.osc=false;terminal.top=0;terminal.bottom=23;}
+function terminalReadView(){const el=$('terminalLog'),t=terminal;if(!el.clientHeight)return;t.viewTop=el.scrollTop;t.follow=el.scrollTop+el.clientHeight>=el.scrollHeight-4;t.lineHeight=parseFloat(getComputedStyle(el).lineHeight)||t.lineHeight;$('terminalLatest').disabled=t.follow;}
+function terminalRestoreView(){const el=$('terminalLog'),t=terminal;if(el.clientHeight){t.lineHeight=parseFloat(getComputedStyle(el).lineHeight)||t.lineHeight;el.scrollTop=t.follow?el.scrollHeight:t.viewTop;t.viewTop=el.scrollTop;}$('terminalLatest').disabled=t.follow;}
+function terminalRender(removed=0){const t=terminal,rows=t.rows.map(row=>row.join('').trimEnd());while(rows.length>t.y+1&&!rows[rows.length-1])rows.pop();t.viewTop=Math.max(0,t.viewTop-removed*t.lineHeight);$('terminalLog').textContent=t.history.concat(rows).join('\n');terminalRestoreView();}
+function terminalScroll(up=true){const t=terminal;if(up){const row=t.rows.splice(t.top,1)[0];if(t.top===0&&t.bottom===23){t.history.push(row.join('').trimEnd());if(t.history.length>TERMINAL_HISTORY_LIMIT){t.history.shift();t.discarded++;}}t.rows.splice(t.bottom,0,Array(80).fill(' '));}else{t.rows.splice(t.bottom,1);t.rows.splice(t.top,0,Array(80).fill(' '));}}
+function terminalDown(){const t=terminal;if(t.y===t.bottom)terminalScroll();else t.y=Math.min(23,t.y+1);}
+function terminalCSI(code){const t=terminal,final=code.slice(-1),args=code.slice(2,-1).replace(/^[?=>]/,'').split(';').map(v=>Number(v)||0),n=args[0]||1;switch(final){
+case 'A':t.y=Math.max(t.top,t.y-n);break;case 'B':t.y=Math.min(t.bottom,t.y+n);break;case 'C':t.x=Math.min(79,t.x+n);break;case 'D':t.x=Math.max(0,t.x-n);break;
+case 'E':t.y=Math.min(23,t.y+n);t.x=0;break;case 'F':t.y=Math.max(0,t.y-n);t.x=0;break;case 'G':t.x=Math.min(79,n-1);break;case 'd':t.y=Math.min(23,n-1);break;
+case 'H':case 'f':t.y=Math.min(23,n-1);t.x=Math.min(79,(args[1]||1)-1);break;
+case 'J':if(args[0]===3){t.discarded+=t.history.length;t.history=[];}if(args[0]===2||args[0]===3)t.rows=Array.from({length:24},()=>Array(80).fill(' '));else if(args[0]===1){for(let y=0;y<t.y;y++)t.rows[y].fill(' ');t.rows[t.y].fill(' ',0,t.x+1);}else{t.rows[t.y].fill(' ',t.x);for(let y=t.y+1;y<24;y++)t.rows[y].fill(' ');}break;
+case 'K':if(args[0]===2)t.rows[t.y].fill(' ');else if(args[0]===1)t.rows[t.y].fill(' ',0,t.x+1);else t.rows[t.y].fill(' ',t.x);break;
+case 's':t.saved=[t.x,t.y];break;case 'u':[t.x,t.y]=t.saved;break;
+case 'P':t.rows[t.y].splice(t.x,Math.min(80,n));while(t.rows[t.y].length<80)t.rows[t.y].push(' ');break;
+case '@':t.rows[t.y].splice(t.x,0,...Array(Math.min(80,n)).fill(' '));t.rows[t.y].length=80;break;
+case 'X':t.rows[t.y].fill(' ',t.x,Math.min(80,t.x+n));break;
+case 'S':for(let i=0;i<Math.min(24,n);i++)terminalScroll();break;case 'T':for(let i=0;i<Math.min(24,n);i++)terminalScroll(false);break;
+case 'L':for(let i=0;i<Math.min(24,n);i++){t.rows.splice(t.y,0,Array(80).fill(' '));t.rows.splice(t.bottom+1,1);}break;
+case 'M':for(let i=0;i<Math.min(24,n);i++){t.rows.splice(t.y,1);t.rows.splice(t.bottom,0,Array(80).fill(' '));}break;
+case 'r':if(n-1<(args[1]||24)-1){t.top=Math.min(22,n-1);t.bottom=Math.min(23,(args[1]||24)-1);t.x=t.y=0;}break;
+/* SGR and private display modes do not change printable characters. */
+}}
+function terminalOutput(hex){terminalReadView();const t=terminal,discarded=t.discarded;for(const pair of hex.match(/../g)||[]){const b=parseInt(pair,16),c=String.fromCharCode(b);if(t.osc){if(b===7||(t.escape==='osc-esc'&&b===92)){t.osc=false;t.escape='';}else t.escape=b===27?'osc-esc':'';continue;}if(t.escape){t.escape+=c;if(t.escape.length===2){if(c===']'){t.osc=true;t.escape='';continue;}if(c==='[')continue;if(c==='('||c===')')continue;if(c==='7')t.saved=[t.x,t.y];if(c==='8')[t.x,t.y]=t.saved;if(c==='c')terminalReset();if(c==='D')terminalDown();if(c==='E'){t.x=0;terminalDown();}if(c==='M'){if(t.y===t.top)terminalScroll(false);else t.y=Math.max(0,t.y-1);}t.escape='';continue;}if(t.escape[1]==='['&&b>=64&&b<=126){terminalCSI(t.escape);t.escape='';}else if(t.escape[1]!=='['||t.escape.length>64)t.escape='';continue;}if(b===27){t.escape=c;continue;}if(b===13){t.x=0;continue;}if(b===10){terminalDown();continue;}if(b===8){t.x=Math.max(0,t.x-1);continue;}if(b===9){t.x=Math.min(79,(Math.floor(t.x/8)+1)*8);continue;}if(b>=32&&b!==127){if(t.x>=80){t.x=0;terminalDown();}t.rows[t.y][t.x++]=c;}}terminalRender(Math.max(0,t.discarded-discarded));}
+function sendTerminal(text){const bytes=new TextEncoder().encode(text);if(bytes.length>512){message("Terminal command exceeds 512 bytes",true);return Promise.resolve(false);}const hex=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');return hex?action('terminal',{hex}):Promise.resolve(false);}
+$('terminalForm').onsubmit=async e=>{e.preventDefault();const text=$('terminalInput').value;if(await sendTerminal(text+({cr:'\r',crlf:'\r\n',none:''}[$('terminalEnd').value]))){if($('terminalInput').value===text)$('terminalInput').value='';}};$('terminalEsc').onclick=()=>sendTerminal('\x1b');$('terminalCtrlC').onclick=()=>sendTerminal('\x03');$('terminalClear').onclick=()=>{terminalReset();$('terminalLog').textContent='';terminalRestoreView();};
+$('terminalLatest').onclick=()=>{terminal.follow=true;terminalRestoreView();};
+$('terminalLog').onscroll=terminalReadView;
+$('terminalLog').onkeydown=e=>{if(e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&['PageUp','PageDown','Home','End'].includes(e.key)){e.preventDefault();const el=$('terminalLog');el.scrollTop=e.key==='Home'?0:e.key==='End'?el.scrollHeight:el.scrollTop+(e.key==='PageUp'?-1:1)*el.clientHeight;terminalReadView();return;}if(!active||!hasState||modeBusy||currentTab!=='sailor'||state.mode!=='sailor'||e.metaKey||e.altKey)return;const map={Enter:'\r',Backspace:'\x7f',Escape:'\x1b',Tab:'\t',ArrowUp:'\x1b[A',ArrowDown:'\x1b[B',ArrowRight:'\x1b[C',ArrowLeft:'\x1b[D'};let text=map[e.key]||(e.key.length===1?e.key:'');if(e.ctrlKey&&e.key.length===1)text=String.fromCharCode(e.key.toUpperCase().charCodeAt(0)&31);if(text){e.preventDefault();sendTerminal(text);}};
+function renderSettings(m){for(const [id,key]of [['apSsid','ap_ssid'],['apIp','ap_ip'],['staSsid','sta_ssid']])if(document.activeElement!==$(id)&&!$(id).dataset.dirty)$(id).value=m[key]||'';}
+['apSsid','apIp','staSsid'].forEach(id=>$(id).oninput=()=>$(id).dataset.dirty='1');
+$('settingsForm').onsubmit=async e=>{e.preventDefault();if(await action('settings',{version:+$('version').value,theme:+$('theme').value,rotated:$('rotated').checked},"Device settings saved."))for(const id of ['version','theme','rotated'])delete $(id).dataset.dirty;};
+$('apForm').onsubmit=e=>{e.preventDefault();const args={ssid:$('apSsid').value,ip:$('apIp').value};if($('apOpen').checked)args.password='';else if($('apPass').value)args.password=$('apPass').value;action('wifi_ap',args);};$('staForm').onsubmit=e=>{e.preventDefault();const args={ssid:$('staSsid').value};if($('staOpen').checked)args.password='';else if($('staPass').value)args.password=$('staPass').value;action('wifi_sta',args);};$('wifiAP').onclick=()=>action('wifi_mode',{value:0});$('wifiReconnect').onclick=()=>action('wifi_connect');$('wifiDisconnect').onclick=()=>action('wifi_disconnect');$('wifiOff').onclick=()=>action('wifi_off');$('scan').onclick=()=>action('wifi_scan',{},"Scanning for networks…");
+function renderScan(m){$('networks').replaceChildren();const blank=document.createElement('option');blank.value='';blank.textContent="Select a network";$('networks').append(blank);for(const a of m.items){const o=document.createElement('option');o.value=a.ssid;o.textContent=a.ssid+' · '+a.rssi+' dBm'+(a.secure?" · secured":'');$('networks').append(o);}message("Networks found: "+m.items.length);}$('networks').onchange=()=>{if($('networks').value){$('staSsid').value=$('networks').value;$('staSsid').dataset.dirty='1';}};
+showWorkspace('rx485');
+if(token){desired=true;reconnectUntil=Date.now()+60000;openSocket();}
+</script>
+</body></html>

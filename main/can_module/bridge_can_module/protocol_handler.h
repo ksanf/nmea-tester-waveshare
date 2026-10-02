@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stddef.h>   /* size_t */
 #include "esp_err.h"
+#include "sailor_telemetry.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,6 +37,7 @@ typedef struct {
 typedef enum {
     PROTOCOL_TERM_IO_UART = 0,
     PROTOCOL_TERM_IO_WIFI = 1,
+    PROTOCOL_TERM_IO_WEB = 2,
 } protocol_term_io_t;
 
 /* ---------- UI callbacks (log lines and state changes) ---------- */
@@ -52,6 +54,22 @@ esp_err_t protocol_handler_set_rs_baudrate(uint32_t baud);
 void protocol_handler_set_term_io_owner(protocol_term_io_t owner);
 protocol_term_io_t protocol_handler_get_term_io_owner(void);
 bool protocol_handler_is_term_ready(void);
+bool protocol_handler_is_running(void);
+bool protocol_handler_is_started(void);
+protocol_link_state_t protocol_handler_get_state(void);
+uint32_t protocol_handler_get_rs_baudrate(void);
+
+/* Cached position survives link loss. Unknown ages are UINT32_MAX. */
+void protocol_handler_get_antenna_status(protocol_antenna_status_t *out);
+
+/* Browser terminal uses bounded byte rings, never a callback into a client.
+ * Output is real terminal data, not diagnostic logs; drain has one consumer.
+ * A change of owner revokes pending input and clears the old browser output. */
+#define PROTOCOL_WEB_INPUT_CAPACITY 1024u
+#define PROTOCOL_WEB_OUTPUT_CAPACITY 8192u
+esp_err_t protocol_handler_web_write(const uint8_t *data, size_t len);
+size_t protocol_handler_web_drain(uint8_t *out, size_t cap);
+void protocol_handler_web_stats(size_t *pending, uint32_t *dropped);
 
 /* ---------- External byte-stream transmission into the tunnel ---------- */
 bool protocol_handler_send_ascii(const uint8_t *data, size_t len);

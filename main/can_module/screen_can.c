@@ -15,6 +15,7 @@
 #include "nm2k_module.h"
 #include "screen_ui.h"
 #include "system/telnet_router.h"
+#include "app/app_controller.h"
 #include "esp_log.h"
 #define CFG_LOG_MODULE LOG_CFG_SCREEN_CAN
 #include "config_logs.h"
@@ -64,8 +65,7 @@ static void screen_can_destroy_(void)
 static void on_btn_bridge(lv_event_t *e) {
     (void)e;
     ESP_LOGI(TAG, "Bridge CAN selected");
-    bridge_can_module_start(NULL);
-    screen_can_destroy_();
+    (void)app_controller_local_start(APP_MODE_SAILOR);
 }
 
 /**
@@ -76,8 +76,7 @@ static void on_btn_nm2k(lv_event_t *e)
     (void)e;
     telnet_router_set_active(TELNET_ROUTE_NONE);
     ESP_LOGI(TAG, "NM2K selected");
-    nm2k_module_start(NULL);
-    screen_can_destroy_();
+    (void)app_controller_local_start(APP_MODE_N2K);
 }
 
 /**

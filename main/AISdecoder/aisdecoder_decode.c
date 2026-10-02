@@ -27,6 +27,11 @@ static bool targets_alloc_(void)
     return s_targets != NULL;
 }
 
+bool aisdecoder_decode_init(void)
+{
+    return targets_alloc_();
+}
+
 void aisdecoder_decode_deinit(void)
 {
     free(s_targets);

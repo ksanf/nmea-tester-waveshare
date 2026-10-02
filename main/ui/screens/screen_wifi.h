@@ -15,6 +15,9 @@ extern "C" {
 #endif
 
 void screen_wifi_show(lv_obj_t *parent);
+/* Pause presentation polling; an in-progress scan can finish independently.
+ * Call while holding the LVGL lock. */
+void screen_wifi_suspend(bool suspended);
 
 #ifdef __cplusplus
 }

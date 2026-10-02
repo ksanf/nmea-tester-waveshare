@@ -6,6 +6,7 @@
  */
 
 #include "ui/screens/screen_wifi.h"
+#include "web/web_server.h"
 #include "ui/screens/screen_ui.h"
 #include "ui/dialog_ui.h"
 #include "ui/ui_theme.h"
@@ -89,6 +90,7 @@ static lv_obj_t *scroll_body = NULL;
 static lv_timer_t *status_timer = NULL;
 static lv_coord_t s_body_full_h = 0;
 static uint32_t s_theme_rev = 0;
+static bool s_view_suspended;
 
 static char s_selected_ssid[33];
 static wifi_ap_record_t s_scan_list[MAX_SCAN];
@@ -114,6 +116,7 @@ static void wifi_screen_clear_refs_(void)
     lbl_selected_ssid = NULL;
     lbl_status_box = NULL; scroll_body = NULL;
     s_body_full_h = 0;
+    s_view_suspended = false;
 }
 
 static void wifi_screen_delete_cb_(lv_event_t *e)
@@ -364,6 +367,10 @@ static esp_err_t wifi_services_sync_(void)
         return err;
     }
     protocol_handler_set_term_io_owner(PROTOCOL_TERM_IO_WIFI);
+    esp_err_t web_err = web_server_start();
+    if (web_err != ESP_OK) {
+        ESP_LOGW(TAG, "Web server start failed: %s", esp_err_to_name(web_err));
+    }
     return ESP_OK;
 }
 
@@ -394,11 +401,17 @@ static void ap_apply_cb_(lv_event_t *e)
     const char *ssid = lv_textarea_get_text(ta_ssid);
     const char *pass = lv_textarea_get_text(ta_pass);
     const char *ip   = lv_textarea_get_text(ta_ip);
-    if (wifi_manager_ap_set(ssid, pass, ip) == ESP_OK) {
-        (void)wifi_manager_set_mode(WIFI_MGR_MODE_AP);
-        (void)wifi_services_sync_();
+    esp_err_t err = wifi_manager_ap_set(ssid, pass, ip);
+    if (err == ESP_OK) err = wifi_manager_set_mode(WIFI_MGR_MODE_AP);
+    if (err == ESP_OK) err = wifi_services_sync_();
+    if (err == ESP_OK) {
         update_mode_buttons_();
         ESP_LOGI(TAG, "AP config saved: %s", ssid);
+    } else {
+        lv_obj_t *box = lv_msgbox_create(scr, "Wi-Fi settings",
+            "Could not save or apply Wi-Fi settings.\nPlease try again.", NULL, true);
+        lv_obj_center(box);
+        ESP_LOGE(TAG, "AP settings failed: %s", esp_err_to_name(err));
     }
 }
 
@@ -964,6 +977,7 @@ void screen_wifi_show(lv_obj_t *parent)
     }
 
     if (screen_alive_(scr)) {
+        screen_wifi_suspend(false);
         lv_scr_load(scr);
         return;
     }
@@ -975,4 +989,27 @@ void screen_wifi_show(lv_obj_t *parent)
     s_theme_rev = ui_theme_get_revision();
     lv_scr_load(scr);
     ESP_LOGI(TAG, "WiFi screen loaded");
+}
+
+void screen_wifi_suspend(bool suspended)
+{
+    const bool was_suspended = s_view_suspended;
+    s_view_suspended = suspended;
+    if (suspended) kb_close();
+    if (!status_timer) return;
+    if (suspended) lv_timer_pause(status_timer);
+    else {
+        if (was_suspended) {
+            /* Web settings may have changed while this cached form was hidden. */
+            char ssid[33], pass[65], ip[16];
+            wifi_manager_ap_get(ssid, sizeof(ssid), pass, sizeof(pass), ip, sizeof(ip));
+            if (ta_ssid) lv_textarea_set_text(ta_ssid, ssid);
+            if (ta_pass) lv_textarea_set_text(ta_pass, pass);
+            if (ta_ip) lv_textarea_set_text(ta_ip, ip);
+            wifi_manager_sta_get(s_selected_ssid, sizeof(s_selected_ssid), NULL, 0);
+        }
+        lv_timer_resume(status_timer);
+        update_mode_buttons_();
+        status_timer_cb_(status_timer);
+    }
 }

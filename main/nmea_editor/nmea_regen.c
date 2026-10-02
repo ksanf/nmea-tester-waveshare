@@ -210,7 +210,9 @@ void regen_gyro(char lines[][NMEA_SENT_MAX], uint8_t *cnt)
 void regen_log(char lines[][NMEA_SENT_MAX], uint8_t *cnt)
 {
     *cnt = 0;
-    const nmea_log_t *p = &g_nmea_log;
+    nmea_log_t snapshot;
+    nmea_templates_log_snapshot(&snapshot);
+    const nmea_log_t *p = &snapshot;
     const char  prf          = p->prefix;
     const char *tk           = p->talker_id;
     const int   add_crc_flag = p->add_crc;
@@ -243,7 +245,9 @@ void regen_log(char lines[][NMEA_SENT_MAX], uint8_t *cnt)
 void regen_echo(char lines[][NMEA_SENT_MAX], uint8_t *cnt)
 {
     *cnt = 0;
-    const nmea_echo_t *p = &g_nmea_echo;
+    nmea_echo_t snapshot;
+    nmea_templates_echo_snapshot(&snapshot);
+    const nmea_echo_t *p = &snapshot;
     const char  prf          = p->prefix;
     const char *tk           = p->talker_id;
     const int   add_crc_flag = p->add_crc;
@@ -283,7 +287,9 @@ void regen_echo(char lines[][NMEA_SENT_MAX], uint8_t *cnt)
 void regen_weather(char lines[][NMEA_SENT_MAX], uint8_t *cnt)
 {
     *cnt = 0;
-    const nmea_weather_t *p = &g_nmea_weather;
+    nmea_weather_t snapshot;
+    nmea_templates_weather_snapshot(&snapshot);
+    const nmea_weather_t *p = &snapshot;
     const char  prf          = p->prefix;
     const char *tk           = p->talker_id;
     const int   add_crc_flag = p->add_crc;

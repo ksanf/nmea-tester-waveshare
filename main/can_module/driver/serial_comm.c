@@ -27,7 +27,7 @@ esp_err_t serial_comm_init(uint32_t baud)
     return ESP_OK;
 }
 
-void serial_comm_deinit(void)
+esp_err_t serial_comm_deinit(void)
 {
     esp_err_t err = rs485_release(RS485_OWNER_CAN_BRIDGE);
     if (err == ESP_OK) {
@@ -35,6 +35,7 @@ void serial_comm_deinit(void)
     } else {
         ESP_LOGW(TAG, "RS-485 release failed: %s", esp_err_to_name(err));
     }
+    return err;
 }
 
 esp_err_t serial_comm_write(const char *data, size_t len)

@@ -7,6 +7,8 @@
 #define RS485_SIMUI_H
 #include "lvgl.h"
 
+#include "rs485/rs485_runtime.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -20,6 +22,11 @@ lv_obj_t *rs485_simui_get_screen(void);
 /** Display a manually transmitted sentence in the TX485 window. */
 void rs485_simui_log_tx(const char *msg);
 void rs485_simui_flush_log(void);
+
+/* View-only calls require the LVGL lock; they never stop the runtime. */
+void rs485_simui_view_suspend(bool suspended);
+lv_obj_t *rs485_simui_view_show(lv_obj_t *parent);
+void rs485_simui_view_destroy(void);
 
 #ifdef __cplusplus
 }

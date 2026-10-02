@@ -20,6 +20,8 @@
 #include "wifi/wifi_manager.h"
 #include "nmea_editor/nmea_templates.h"
 #include "nmea_editor/nmea_version.h"
+#include "app/app_controller.h"
+#include "web/web_server.h"
 #include <driver/gpio.h> 
 #include <nvs_flash.h>
 #include <esp_err.h>
@@ -306,6 +308,9 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to lock LVGL for main screen init");
     }
     log_heap("after screen_ui_init");
+    /* Lifecycle commands are queued by UI callbacks and run outside LVGL. */
+    ESP_ERROR_CHECK(app_controller_init());
+    log_heap("after app_controller_init");
 
     telnet_router_init();
     esp_err_t net_err = wifi_manager_init();
@@ -327,6 +332,14 @@ void app_main(void)
     } else {
         ESP_LOGE(TAG, "WiFi init failed, continuing without network services: %s",
                  esp_err_to_name(net_err));
+    }
+    /* The HTTP listener stays available across AP/STA/off transitions. netif
+     * is initialized even when the saved Wi-Fi preference is disabled. */
+    if (net_err == ESP_OK) {
+        esp_err_t web_err = web_server_start();
+        if (web_err != ESP_OK) {
+            ESP_LOGW(TAG, "Web server start failed: %s", esp_err_to_name(web_err));
+        }
     }
     log_heap("after wifi_init");
     if (lvgl_port_lock(-1)) {

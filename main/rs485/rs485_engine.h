@@ -20,6 +20,8 @@ typedef enum {
 
 /* Initialize the engine and create its FreeRTOS task. */
 bool rs485_engine_init(void);
+bool rs485_engine_running(void);
+bool rs485_engine_group_active(rs485_group_t grp);
 /* Gracefully stop the task. Returns false without freeing live resources. */
 bool rs485_engine_deinit(void);
 

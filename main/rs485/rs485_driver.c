@@ -9,6 +9,7 @@
 #include "config/config_pins.h"
 #include "config/config_nmea_tester.h"
 #include "config/memory_config.h"
+#include "system/port_activity.h"
 
 #include <driver/uart.h>
 #include <driver/gpio.h>
@@ -171,6 +172,7 @@ static esp_err_t rs485_read_common_(uint8_t *buf, size_t *len, TickType_t timeou
     bus_unlock();
 
     if (got > 0) {
+        port_activity_mark(PORT_ACTIVITY_RS485_RX);
         *len = (size_t)got;
         return ESP_OK;
     }
@@ -466,6 +468,7 @@ esp_err_t rs485_driver_write(const char *data, size_t len)
     vTaskDelay(SETTLE_TICKS);
 
     int sent = uart_write_bytes(RS485_UART_PORT, data, len);
+    if (sent > 0) port_activity_mark(PORT_ACTIVITY_RS485_TX);
     if (sent != (int)len) {
         ESP_LOGE(TAG, "TX mismatch: sent %d / %u", sent, (unsigned)len);
         ret = ESP_FAIL;

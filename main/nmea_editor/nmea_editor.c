@@ -41,6 +41,7 @@ static lv_obj_t *content     = NULL;
 static lv_obj_t *tab_btns[IDX_COUNT] = {0};
 static int       current_tab = -1;
 static uint32_t  s_theme_rev = 0;
+static int s_suspended_tab = -1;
 
 static const struct {
     const char *name;
@@ -78,6 +79,7 @@ void nmea_editor_create(void)
         editor_destroy_();
     }
     if (editor_scr) {              /* Reuse the existing screen. */
+        nmea_editor_suspend(false);
         lv_scr_load(editor_scr);
         return;
     }
@@ -157,6 +159,7 @@ static void reset_state(void)
     num_edit_cancel();  /* Clear the keyboard and numeric-editor state. */
 
     current_tab = -1;
+    s_suspended_tab = -1;
     editor_scr  = NULL;
     content     = NULL;
     memset(tab_btns, 0, sizeof(tab_btns));
@@ -230,4 +233,22 @@ static void editor_update_tab_state_(int idx)
         if (tab_btns[i]) lv_obj_clear_state(tab_btns[i], LV_STATE_CHECKED);
     }
     if (tab_btns[idx]) lv_obj_add_state(tab_btns[idx], LV_STATE_CHECKED);
+}
+
+void nmea_editor_suspend(bool suspended)
+{
+    if (!editor_scr || !content) return;
+    if (suspended) {
+        if (s_suspended_tab >= 0) return;
+        s_suspended_tab = current_tab >= 0 ? current_tab : IDX_GPS;
+        (void)num_edit_finish();
+        /* Deleting the tab's labels releases every cursor/blink timer, even
+         * those belonging to a previously focused numeric field. */
+        lv_obj_clean(content);
+        current_tab = -1;
+    } else if (s_suspended_tab >= 0) {
+        const int tab = s_suspended_tab;
+        s_suspended_tab = -1;
+        switch_tab(tab);
+    }
 }

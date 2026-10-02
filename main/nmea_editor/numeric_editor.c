@@ -59,6 +59,9 @@ typedef struct {
     void (*fmt)(char *);        /* Raw value to display format */
     void (*commit)(void);
     char tmp[16];
+    char applied[16];           /* Last applied value, separate from the draft. */
+    uint8_t raw_len;
+    bool dirty;
     uint8_t cursor_pos;         /* Current cursor position */
     const field_limit_t *limits; /* Per-field limits */
     uint8_t num_fields;         /* Number of limited fields */
@@ -176,7 +179,26 @@ static bool can_accept_digit(ctx_t *c, uint8_t cur, char digit) {
 }
 
 /* -------- Reset state -------- */
+static void stop_active_cursor_(void)
+{
+    if (!active_lbl || !lv_obj_is_valid(active_lbl)) return;
+    ctx_t *c = lv_obj_get_user_data(active_lbl);
+    if (!c) return;
+    if (c->blink_timer) { lv_timer_del(c->blink_timer); c->blink_timer = NULL; }
+    if (c->cursor_underline && lv_obj_is_valid(c->cursor_underline)) {
+        lv_obj_add_flag(c->cursor_underline, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void num_edit_cancel(void) {
+    if (active_lbl && lv_obj_is_valid(active_lbl)) {
+        ctx_t *c = lv_obj_get_user_data(active_lbl);
+        if (c && c->dirty) {
+            memcpy(c->raw, c->applied, (size_t)c->raw_len + 1u);
+            c->dirty = false;
+        }
+    }
+    stop_active_cursor_();
     if (kb && lv_obj_is_valid(kb)) lv_obj_del(kb);
     if (proxy_ta && lv_obj_is_valid(proxy_ta)) {
         lv_obj_add_flag(proxy_ta, LV_OBJ_FLAG_HIDDEN);
@@ -197,6 +219,7 @@ static void handle_backspace(ctx_t *c, lv_obj_t *label) {
     if (cur == 0 && c->map[cur] < 0) return;
 
     c->raw[c->map[cur]] = '0';
+    c->dirty = true;
     c->fmt(c->tmp);
 
     c->cursor_pos = cur;
@@ -210,9 +233,40 @@ static void handle_backspace(ctx_t *c, lv_obj_t *label) {
     lv_obj_invalidate(label);
 }
 
+/* Resolve the draft before hiding or deleting any editor widgets. */
+static bool resolve_draft_(ctx_t *c)
+{
+    if (!c || !c->dirty) return true;
+    const bool valid = num_edit_fields_valid(c->raw, c->raw_len, c->map,
+                                             c->disp_len, c->limits, c->num_fields);
+    if (valid) {
+        if (c->commit) c->commit();
+        memcpy(c->applied, c->raw, (size_t)c->raw_len + 1u);
+    } else {
+        memcpy(c->raw, c->applied, (size_t)c->raw_len + 1u);
+    }
+    c->dirty = false;
+    return valid;
+}
+
+bool num_edit_finish(void)
+{
+    bool valid = true;
+    if (active_lbl && lv_obj_is_valid(active_lbl)) {
+        ctx_t *c = lv_obj_get_user_data(active_lbl);
+        if (c) {
+            valid = resolve_draft_(c);
+            c->fmt(c->tmp);
+            lv_label_set_text(active_lbl, c->tmp);
+        }
+    }
+    num_edit_cancel();
+    return valid;
+}
+
 /* -------- Commit, hide the keyboard, and refresh the label -------- */
 static void handle_commit_and_hide(ctx_t *c, lv_obj_t *label) {
-    if (c->commit) c->commit();
+    (void)resolve_draft_(c);
     c->fmt(c->tmp);
     c->cursor_pos = 0;
 
@@ -249,6 +303,7 @@ static void edit_cb(lv_event_t *e) {
 
     /* 1. A label tap opens the keyboard. */
     if (code == LV_EVENT_CLICKED) {
+        if (active_lbl != label) (void)num_edit_finish();
         if (!kb) {
             kb = lv_keyboard_create(lv_layer_top());
             lv_obj_set_size(kb, LV_HOR_RES, LV_VER_RES / 2);
@@ -301,6 +356,7 @@ static void edit_cb(lv_event_t *e) {
                 if (!can_accept_digit(c, cur, *t)) return;
 
                 c->raw[c->map[cur]] = *t;
+                c->dirty = true;
                 c->fmt(c->tmp);
 
                 uint8_t nxt = cur + 1;
@@ -379,6 +435,14 @@ void num_edit_bind(lv_obj_t *label,
                    char *raw, const int8_t *map, uint8_t len,
                    void (*fmt)(char *), void (*commit)(void),
                    const field_limit_t *limits, uint8_t num_fields) {
+    if (!label || !raw || !map || !fmt) return;
+    const size_t raw_len = strnlen(raw, sizeof(((ctx_t *)0)->applied));
+    if (!raw_len || raw_len >= sizeof(((ctx_t *)0)->applied)) return;
+    for (uint8_t i = 0; i < len; ++i)
+        if (map[i] >= 0 && (size_t)map[i] >= raw_len) return;
+    for (uint8_t i = 0; i < num_fields; ++i)
+        if (!limits || !limits[i].digits || limits[i].digits > 5 ||
+            (size_t)limits[i].start_raw + limits[i].digits > raw_len) return;
     ctx_t *c = lv_obj_get_user_data(label);
     if (!c) {
         c = lv_mem_alloc(sizeof *c);
@@ -394,6 +458,9 @@ void num_edit_bind(lv_obj_t *label,
         c->blink_timer = NULL;
     }
     c->raw = raw;
+    c->raw_len = (uint8_t)raw_len;
+    memcpy(c->applied, raw, raw_len + 1u);
+    c->dirty = false;
     c->map = map;
     c->disp_len = len;
     c->fmt = fmt;

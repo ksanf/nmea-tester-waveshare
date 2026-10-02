@@ -4,6 +4,8 @@
  */
 
 #include "rs485_bridge/rs485_bridge.h"
+#include "rs485/rs485_runtime_log.h"
+#include "app/app_controller.h"
 
 #include "config/config_nmea_tester.h"
 #include "rs485/rs485_driver.h"
@@ -47,6 +49,7 @@ static atomic_bool rs485_ready = ATOMIC_VAR_INIT(false);
 static atomic_bool s_net_rx_enabled = ATOMIC_VAR_INIT(false);
 static atomic_uint s_net_rx_inflight = ATOMIC_VAR_INIT(0);
 static uint32_t s_theme_rev = 0;
+static rs485_runtime_log_t s_runtime_log = RS485_RUNTIME_LOG_INIT;
 
 static _Atomic uint32_t s_bytes_net_to_rs = 0;
 static _Atomic uint32_t s_bytes_rs_to_net = 0;
@@ -181,6 +184,7 @@ static void rs485_bridge_status_update_(void)
     char state_text[128];
 
     if (!scr_bridge || !screen_alive(scr_bridge)) return;
+    ui_baud_selector_sync(dd_rs_baud);
 
     wifi_on = wifi_ap_is_enabled();
     if (!wifi_on) {
@@ -249,19 +253,23 @@ static void rs485_bridge_forward_to_net_(const uint8_t *data, size_t len)
         (void)telnet_server_send(data, len);
     }
     (void)udp_nmea_server_send_to_last_peer(data, len);
+    rs485_runtime_log_append(&s_runtime_log, RS485_EVENT_BRIDGE_RX, data, len);
     atomic_fetch_add(&s_bytes_rs_to_net, (uint32_t)len);
     atomic_fetch_add(&s_pkts_rs_to_net, 1u);
 }
 
-static void rs485_bridge_send_to_rs_(const uint8_t *data, size_t len)
+static esp_err_t rs485_bridge_send_to_rs_(const uint8_t *data, size_t len)
 {
-    if (!data || len == 0 || !rs485_is_ready_()) return;
-    if (rs485_driver_write((const char *)data, len) != ESP_OK) {
+    if (!data || len == 0 || !rs485_is_ready_()) return ESP_ERR_INVALID_STATE;
+    esp_err_t result = rs485_driver_write((const char *)data, len);
+    if (result != ESP_OK) {
         ESP_LOGW(TAG, "RS485 write failed: len=%u", (unsigned)len);
-        return;
+        return result;
     }
     atomic_fetch_add(&s_bytes_net_to_rs, (uint32_t)len);
     atomic_fetch_add(&s_pkts_net_to_rs, 1u);
+    rs485_runtime_log_append(&s_runtime_log, RS485_EVENT_BRIDGE_TX, data, len);
+    return ESP_OK;
 }
 
 static void rs485_bridge_telnet_rx_cb_(const uint8_t *data, size_t len, void *user)
@@ -299,42 +307,25 @@ static void rs485_bridge_task_(void *arg)
     vTaskDelete(NULL);
 }
 
-static void rs485_bridge_destroy_(void)
+bool rs485_bridge_runtime_stop(void)
 {
-    if (!scr_bridge) return;
-
-    /* Close the gate before unregistering: a callback may already be copied
-     * by a network task. Wait until every in-flight UART write has returned. */
+    if (!rs485_is_ready_() && !atomic_load(&bridge_task)) return true;
     atomic_store_explicit(&s_net_rx_enabled, false, memory_order_release);
     telnet_router_unregister(TELNET_ROUTE_RS485_BRIDGE);
     udp_nmea_server_set_rx_cb(NULL, NULL);
-    if (!bridge_wait_net_idle_()) {
-        ESP_LOGE(TAG, "Network RX drain timed out; RS-485 kept acquired");
-        return;
-    }
-
+    if (!bridge_wait_net_idle_()) return false;
     atomic_store_explicit(&bridge_stop, true, memory_order_release);
-    if (!bridge_wait_task_stopped_()) {
-        ESP_LOGE(TAG, "Bridge task stop timed out; RS-485 kept acquired");
-        return;
+    if (!bridge_wait_task_stopped_()) return false;
+    if (rs485_is_ready_()) {
+        if (rs485_release(RS485_OWNER_NETWORK_BRIDGE) != ESP_OK) return false;
+        atomic_store_explicit(&rs485_ready, false, memory_order_release);
     }
+    return true;
+}
 
-    esp_err_t release_err = rs485_release(RS485_OWNER_NETWORK_BRIDGE);
-    if (release_err != ESP_OK) {
-        ESP_LOGW(TAG, "RS-485 release failed: %s", esp_err_to_name(release_err));
-        return;
-    }
-    atomic_store_explicit(&rs485_ready, false, memory_order_release);
-
-    if (tmr_status) {
-        lv_timer_del(tmr_status);
-        tmr_status = NULL;
-    }
-
-    lv_obj_t *old = scr_bridge;
-    scr_bridge = NULL;
-    screen_ui_show();
-    lv_obj_del_async(old);
+void rs485_bridge_view_destroy(void)
+{
+    if (scr_bridge && lv_obj_is_valid(scr_bridge)) lv_obj_del(scr_bridge);
 }
 
 static void rs485_bridge_scr_delete_cb_(lv_event_t *e)
@@ -345,37 +336,32 @@ static void rs485_bridge_scr_delete_cb_(lv_event_t *e)
     lbl_net = NULL;
     lbl_state = NULL;
     lbl_hint = NULL;
-    tmr_status = NULL;
+    if (tmr_status) { lv_timer_del(tmr_status); tmr_status = NULL; }
     scr_bridge = NULL;
 }
 
 static void rs485_bridge_home_cb_(lv_event_t *e)
 {
     (void)e;
-    rs485_bridge_destroy_();
+    (void)app_controller_local_stop();
 }
 
-lv_obj_t *rs485_bridge_create(lv_obj_t *parent)
+lv_obj_t *rs485_bridge_view_show(lv_obj_t *parent)
 {
     (void)parent;
     const ui_theme_palette_t *th = ui_theme_get();
     const bool color_mode = (ui_theme_get_id() == UI_THEME_COLOR);
 
     if (screen_alive(scr_bridge) && s_theme_rev != ui_theme_get_revision()) {
-        rs485_bridge_destroy_();
+        rs485_bridge_view_destroy();
     }
 
     if (scr_bridge) {
+        rs485_bridge_view_suspend(false);
+        ui_baud_selector_sync(dd_rs_baud);
         lv_scr_load(scr_bridge);
         return scr_bridge;
     }
-
-    atomic_store(&s_bytes_net_to_rs, 0);
-    atomic_store(&s_bytes_rs_to_net, 0);
-    atomic_store(&s_pkts_net_to_rs, 0);
-    atomic_store(&s_pkts_rs_to_net, 0);
-    atomic_store_explicit(&s_net_rx_enabled, false, memory_order_release);
-    atomic_store_explicit(&s_net_rx_inflight, 0u, memory_order_release);
 
     scr_bridge = lv_obj_create(NULL);
     lv_obj_clear_flag(scr_bridge, LV_OBJ_FLAG_SCROLLABLE);
@@ -383,14 +369,6 @@ lv_obj_t *rs485_bridge_create(lv_obj_t *parent)
     dialog_ui_apply_screen_bg(scr_bridge);
     lv_obj_set_style_border_width(scr_bridge, 0, LV_PART_MAIN);
     s_theme_rev = ui_theme_get_revision();
-
-    if (wifi_ap_is_enabled() && !rs485_is_ready_()) {
-        if (rs485_acquire(RS485_OWNER_NETWORK_BRIDGE, 0) == ESP_OK) {
-            atomic_store_explicit(&rs485_ready, true, memory_order_release);
-        } else {
-            ESP_LOGE(TAG, "RS-485 init failed");
-        }
-    }
 
     lv_obj_t *title = lv_label_create(scr_bridge);
     lv_label_set_text(title, "RS485-BRIDGE");
@@ -449,27 +427,6 @@ lv_obj_t *rs485_bridge_create(lv_obj_t *parent)
         }
         lv_obj_align(lbl_state, LV_ALIGN_TOP_LEFT, 0, 32);
 
-        TaskHandle_t created_task = NULL;
-        atomic_store_explicit(&bridge_stop, false, memory_order_release);
-        if (xTaskCreatePinnedToCore(rs485_bridge_task_, "rs485_bridge", 4096,
-                                    NULL, 4, &created_task, tskNO_AFFINITY) != pdPASS) {
-            ESP_LOGE(TAG, "Failed to start bridge task");
-            lv_label_set_text(lbl_state, "Bridge task start failed");
-            esp_err_t release_err = rs485_release(RS485_OWNER_NETWORK_BRIDGE);
-            if (release_err == ESP_OK) {
-                atomic_store_explicit(&rs485_ready, false, memory_order_release);
-            } else {
-                ESP_LOGE(TAG, "RS-485 cleanup failed: %s", esp_err_to_name(release_err));
-            }
-        } else {
-            atomic_store_explicit(&bridge_task, created_task, memory_order_release);
-            telnet_router_register(TELNET_ROUTE_RS485_BRIDGE,
-                                   rs485_bridge_telnet_rx_cb_, NULL);
-            telnet_router_set_active(TELNET_ROUTE_RS485_BRIDGE);
-            udp_nmea_server_set_rx_cb(rs485_bridge_udp_rx_cb_, NULL);
-            atomic_store_explicit(&s_net_rx_enabled, true, memory_order_release);
-        }
-
         tmr_status = lv_timer_create(rs485_bridge_status_timer_cb_, 500, NULL);
         if (!tmr_status) {
             ESP_LOGW(TAG, "Status timer allocation failed");
@@ -497,4 +454,75 @@ lv_obj_t *rs485_bridge_create(lv_obj_t *parent)
 lv_obj_t *rs485_bridge_get_screen(void)
 {
     return scr_bridge;
+}
+
+
+bool rs485_bridge_runtime_running(void)
+{
+    return rs485_is_ready_() && atomic_load_explicit(&bridge_task, memory_order_acquire) != NULL;
+}
+
+bool rs485_bridge_runtime_start(void)
+{
+    if (rs485_bridge_runtime_running()) return true;
+    if (!rs485_runtime_log_init(&s_runtime_log)) return false;
+    if (rs485_acquire(RS485_OWNER_NETWORK_BRIDGE, rs485_get_baudrate()) != ESP_OK) return false;
+    atomic_store_explicit(&rs485_ready, true, memory_order_release);
+    atomic_store(&s_bytes_net_to_rs, 0);
+    atomic_store(&s_bytes_rs_to_net, 0);
+    atomic_store(&s_pkts_net_to_rs, 0);
+    atomic_store(&s_pkts_rs_to_net, 0);
+    TaskHandle_t task = NULL;
+    atomic_store_explicit(&bridge_stop, false, memory_order_release);
+    if (xTaskCreatePinnedToCore(rs485_bridge_task_, "rs485_bridge", 4096,
+                                NULL, 4, &task, tskNO_AFFINITY) != pdPASS) {
+        if (rs485_release(RS485_OWNER_NETWORK_BRIDGE) == ESP_OK) atomic_store(&rs485_ready, false);
+        return false;
+    }
+    atomic_store_explicit(&bridge_task, task, memory_order_release);
+    telnet_router_register(TELNET_ROUTE_RS485_BRIDGE, rs485_bridge_telnet_rx_cb_, NULL);
+    telnet_router_set_active(TELNET_ROUTE_RS485_BRIDGE);
+    udp_nmea_server_set_rx_cb(rs485_bridge_udp_rx_cb_, NULL);
+    atomic_store_explicit(&s_net_rx_enabled, true, memory_order_release);
+    return true;
+}
+
+esp_err_t rs485_bridge_runtime_set_baud(uint32_t baud)
+{
+    return rs485_bridge_runtime_running() ? rs485_set_baudrate(baud) : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t rs485_bridge_runtime_write(const uint8_t *data, size_t length)
+{
+    if (!data || !length || length > BRIDGE_RX_BUF_SZ) return ESP_ERR_INVALID_ARG;
+    if (!bridge_net_rx_begin_()) return ESP_ERR_INVALID_STATE;
+    esp_err_t result = rs485_bridge_send_to_rs_(data, length);
+    bridge_net_rx_end_();
+    return result;
+}
+
+void rs485_bridge_runtime_status(rs485_bridge_status_t *out)
+{
+    if (!out) return;
+    *out = (rs485_bridge_status_t){
+        .running = rs485_bridge_runtime_running(), .baud = rs485_get_baudrate(),
+        .bytes_to_uart = atomic_load(&s_bytes_net_to_rs), .bytes_from_uart = atomic_load(&s_bytes_rs_to_net),
+        .packets_to_uart = atomic_load(&s_pkts_net_to_rs), .packets_from_uart = atomic_load(&s_pkts_rs_to_net)
+    };
+}
+
+bool rs485_bridge_runtime_read(uint32_t *cursor, rs485_runtime_event_t *out, uint32_t *dropped)
+{
+    return rs485_runtime_log_read(&s_runtime_log, cursor, out, dropped);
+}
+
+void rs485_bridge_view_suspend(bool suspended)
+{
+    if (tmr_status) { if (suspended) lv_timer_pause(tmr_status); else lv_timer_resume(tmr_status); }
+}
+
+lv_obj_t *rs485_bridge_create(lv_obj_t *parent)
+{
+    if (!rs485_bridge_runtime_start()) return NULL;
+    return rs485_bridge_view_show(parent);
 }

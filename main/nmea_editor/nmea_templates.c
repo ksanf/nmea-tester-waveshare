@@ -11,6 +11,7 @@
 #include "config_logs.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
+#include <freertos/semphr.h>
 #include <nvs.h>
 #include <math.h>
 #include <stddef.h>
@@ -59,6 +60,7 @@ typedef struct {
 } nmea_templates_blob_t;
 
 static TimerHandle_t s_save_timer;
+static SemaphoreHandle_t s_save_mutex;
 static portMUX_TYPE s_gps_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_gyro_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_gyro_revision;
@@ -308,6 +310,11 @@ void nmea_templates_gyro_advance(uint32_t elapsed_ms)
 
 esp_err_t nmea_templates_init(void)
 {
+    /* Init runs before the editor, controller and clock tasks start. */
+    if (!s_save_mutex) {
+        s_save_mutex = xSemaphoreCreateMutex();
+        if (!s_save_mutex) return ESP_ERR_NO_MEM;
+    }
     if (!s_save_timer) {
         s_save_timer = xTimerCreate("nmea_tpl_save",
                                     pdMS_TO_TICKS(NMEA_TPL_SAVE_DEBOUNCE_MS),
@@ -440,23 +447,30 @@ static void nmea_templates_save_timer_cb_(TimerHandle_t timer)
 
 static esp_err_t nmea_templates_save_internal_(void)
 {
+    if (!s_save_mutex) return ESP_ERR_INVALID_STATE;
+    /* Serialize the snapshot and commit together. An in-flight debounce save
+     * must never overwrite a newer controller Save now with its old snapshot. */
+    if (xSemaphoreTake(s_save_mutex, portMAX_DELAY) != pdTRUE) return ESP_FAIL;
     void *handle;
     nmea_templates_blob_t blob = {
         .version = NMEA_TPL_VERSION,
-        .log = g_nmea_log,
-        .echo = g_nmea_echo,
-        .weather = g_nmea_weather,
+
     };
+    nmea_templates_log_snapshot(&blob.log);
+    nmea_templates_echo_snapshot(&blob.echo);
+    nmea_templates_weather_snapshot(&blob.weather);
     nmea_templates_gps_snapshot(&blob.gps);
     nmea_templates_gyro_snapshot(&blob.gyro);
     esp_err_t err = nvs_rw_open_rw(NMEA_TPL_NAMESPACE, &handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_open save failed: %s", esp_err_to_name(err));
+        xSemaphoreGive(s_save_mutex);
         return err;
     }
 
     err = nvs_rw_write_blob(handle, NMEA_TPL_KEY, &blob, sizeof(blob));
     nvs_rw_close(handle);
+    xSemaphoreGive(s_save_mutex);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "save failed: %s", esp_err_to_name(err));
         return err;
@@ -470,8 +484,14 @@ static void nmea_templates_log_summary_(const char *prefix)
 {
     nmea_gps_t gps;
     nmea_gyro_t gyro;
+    nmea_log_t log;
+    nmea_echo_t echo;
+    nmea_weather_t weather;
     nmea_templates_gps_snapshot(&gps);
     nmea_templates_gyro_snapshot(&gyro);
+    nmea_templates_log_snapshot(&log);
+    nmea_templates_echo_snapshot(&echo);
+    nmea_templates_weather_snapshot(&weather);
     ESP_LOGI(TAG,
              "%s gps{time=%s date=%s lat=%s%c lon=%s%c sog=%.1f cog=%.1f} "
              "gyro{hdt=%.1f rot=%.1f status=%c follow=%d} "
@@ -485,11 +505,11 @@ static void nmea_templates_log_summary_(const char *prefix)
              gyro.rot_deg_min,
              gyro.rot_status,
              gyro.follow_rot ? 1 : 0,
-             g_nmea_log.water_speed_kn,
-             g_nmea_echo.depth_m,
-             g_nmea_weather.wind_angle_rel_deg,
-             g_nmea_weather.wind_speed_kn,
-             g_nmea_weather.water_temp_C);
+             log.water_speed_kn,
+             echo.depth_m,
+             weather.wind_angle_rel_deg,
+             weather.wind_speed_kn,
+             weather.water_temp_C);
 }
 
 static void nmea_templates_sanitize_(void)
@@ -548,4 +568,70 @@ static void nmea_templates_sanitize_(void)
         strcmp(g_nmea_weather.talker_id, "YX") != 0) {
         strlcpy(g_nmea_weather.talker_id, "WI", sizeof(g_nmea_weather.talker_id));
     }
+}
+
+static portMUX_TYPE s_other_templates_mux = portMUX_INITIALIZER_UNLOCKED;
+void nmea_templates_log_snapshot(nmea_log_t *out) {
+    if (!out) return;
+    portENTER_CRITICAL(&s_other_templates_mux); *out = g_nmea_log; portEXIT_CRITICAL(&s_other_templates_mux);
+}
+void nmea_templates_echo_snapshot(nmea_echo_t *out) {
+    if (!out) return;
+    portENTER_CRITICAL(&s_other_templates_mux); *out = g_nmea_echo; portEXIT_CRITICAL(&s_other_templates_mux);
+}
+void nmea_templates_weather_snapshot(nmea_weather_t *out) {
+    if (!out) return;
+    portENTER_CRITICAL(&s_other_templates_mux); *out = g_nmea_weather; portEXIT_CRITICAL(&s_other_templates_mux);
+}
+void nmea_templates_snapshot_all(nmea_templates_snapshot_t *out) {
+    if (!out) return;
+    nmea_templates_gps_snapshot(&out->gps); nmea_templates_gyro_snapshot(&out->gyro);
+    nmea_templates_log_snapshot(&out->log); nmea_templates_echo_snapshot(&out->echo);
+    nmea_templates_weather_snapshot(&out->weather);
+}
+esp_err_t nmea_templates_patch(rs485_group_t group, const void *src,
+                               const uint8_t *mask, size_t size) {
+    void *dst = NULL; size_t expected = 0;
+    portMUX_TYPE *mux = &s_other_templates_mux;
+    switch (group) {
+    case GRP_GPS: dst = &g_nmea_gps; expected = sizeof(g_nmea_gps); mux = &s_gps_mux; break;
+    case GRP_GYRO: dst = &g_nmea_gyro; expected = sizeof(g_nmea_gyro); mux = &s_gyro_mux; break;
+    case GRP_LOG: dst = &g_nmea_log; expected = sizeof(g_nmea_log); break;
+    case GRP_ECHO: dst = &g_nmea_echo; expected = sizeof(g_nmea_echo); break;
+    case GRP_WX: dst = &g_nmea_weather; expected = sizeof(g_nmea_weather); break;
+    default: return ESP_ERR_INVALID_ARG;
+    }
+    if (!src || !mask || size != expected) return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(mux);
+    for (size_t i = 0; i < size; ++i) if (mask[i]) ((uint8_t *)dst)[i] = ((const uint8_t *)src)[i];
+    if (group == GRP_GYRO) s_gyro_revision++;
+    portEXIT_CRITICAL(mux);
+    nmea_mark_dirty(group);
+    return ESP_OK;
+}
+
+
+esp_err_t nmea_templates_write_field(void *field, const void *value, size_t size)
+{
+    void *const bases[GRP_COUNT] = {
+        &g_nmea_gps, &g_nmea_gyro, &g_nmea_log, &g_nmea_echo, &g_nmea_weather
+    };
+    const size_t sizes[GRP_COUNT] = {
+        sizeof(g_nmea_gps), sizeof(g_nmea_gyro), sizeof(g_nmea_log),
+        sizeof(g_nmea_echo), sizeof(g_nmea_weather)
+    };
+    if (!field || !value || size == 0) return ESP_ERR_INVALID_ARG;
+    const uintptr_t address = (uintptr_t)field;
+    for (int group = 0; group < GRP_COUNT; ++group) {
+        const uintptr_t base = (uintptr_t)bases[group];
+        if (address < base || address - base >= sizes[group]) continue;
+        const size_t offset = (size_t)(address - base);
+        if (size > sizes[group] - offset) return ESP_ERR_INVALID_ARG;
+        uint8_t bytes[sizeof(nmea_templates_snapshot_t)] = {0};
+        uint8_t mask[sizeof(nmea_templates_snapshot_t)] = {0};
+        memcpy(bytes + offset, value, size);
+        memset(mask + offset, 1, size);
+        return nmea_templates_patch((rs485_group_t)group, bytes, mask, sizes[group]);
+    }
+    return ESP_ERR_INVALID_ARG;
 }

@@ -4,6 +4,12 @@
  */
 
 #include "rs485/rs485_simui.h"
+#include "rs485/rs485_runtime_log.h"
+#include "app/app_controller.h"
+#include "app/navigation_model.h"
+#include "nmea_editor/nmea_wire.h"
+#include <stdatomic.h>
+#include <freertos/task.h>
 #include "ui/dialog_ui.h"
 #include "ui/instrument_panel.h"
 #include "ui/nmea_log.h"
@@ -50,25 +56,24 @@ LV_FONT_DECLARE(lv_font_montserrat_28)
 /* Group button font. */
 #define SIMUI_GRP_BTN_FONT  &lv_font_montserrat_22
 
+static lv_obj_t *s_baud_dropdown;
 static lv_obj_t *scr_simui = NULL;   /* Screen handle. */
 static lv_obj_t *btn_grp[GRP_COUNT]; /* Toggle button handles. */
 static lv_obj_t *lbl_net_status = NULL;
 static lv_timer_t *tmr_net_status = NULL;
 static lv_timer_t *tmr_engine_ui = NULL;
 static lv_timer_t *tmr_log_drain = NULL;
-static bool      rs485_ready = false;
+static atomic_bool rs485_ready = ATOMIC_VAR_INIT(false);
+static atomic_bool s_accept_writes = ATOMIC_VAR_INIT(false);
+static atomic_uint s_writes_inflight;
+static rs485_runtime_log_t s_runtime_log = RS485_RUNTIME_LOG_INIT;
+static uint32_t s_view_cursor;
+static bool s_view_suspended;
 static char      s_telnet_line[128];
 static size_t    s_telnet_line_len = 0;
 static char      s_udp_line[256];
 static size_t    s_udp_line_len = 0;
-static QueueHandle_t s_log_q = NULL;
 static uint32_t s_theme_rev = 0;
-
-#define SIMUI_LOG_Q_LEN 24
-
-typedef struct {
-    char line[NMEA_SENT_MAX + 3];
-} simui_log_evt_t;
 
 static const struct { const char *txt; uint32_t col; rs485_group_t grp; } BTN[GRP_COUNT] = {
     {"GPS", UI_GROUP_GPS_HEX, GRP_GPS},
@@ -94,7 +99,7 @@ static void cb_btn_back(lv_event_t *e);
 static bool simui_prepare_port_(void)
 {
     if (rs485_ready) return true;
-    if (rs485_acquire(RS485_OWNER_TRANSMITTER, 0) != ESP_OK) {
+    if (rs485_acquire(RS485_OWNER_TRANSMITTER, rs485_get_baudrate()) != ESP_OK) {
         ESP_LOGE("simui", "RS-485 init failed");
         return false;
     }
@@ -121,6 +126,7 @@ static void simui_build_screen_(void)
     ui_theme_apply_card(bar);
 
     lv_obj_t *baud_dd = ui_baud_selector_create(bar);
+    s_baud_dropdown = baud_dd;
     lv_obj_align(baud_dd, LV_ALIGN_LEFT_MID, 0, 0);
 
     lv_obj_update_layout(bar);
@@ -179,29 +185,12 @@ static void simui_build_screen_(void)
                   log_h);
 }
 
-static bool simui_start_runtime_(void)
+static bool simui_start_ui_timers_(void)
 {
-    if (!s_log_q) {
-        s_log_q = xQueueCreate(SIMUI_LOG_Q_LEN, sizeof(simui_log_evt_t));
-        if (!s_log_q) {
-            ESP_LOGE("simui", "Log queue create failed");
-            return false;
-        }
-    }
-    if (!rs485_engine_init()) return false;
-    telnet_router_register(TELNET_ROUTE_TX485, simui_telnet_rx_cb_, NULL);
-    telnet_router_set_active(TELNET_ROUTE_TX485);
-    udp_nmea_server_set_rx_cb(simui_udp_rx_cb_, NULL);
-    simui_update_net_status_();
-    tmr_net_status = lv_timer_create(simui_net_status_timer_cb_, 500, NULL);
-    tmr_engine_ui = lv_timer_create(simui_engine_ui_timer_cb_,
-                                    ENGINE_UI_INTERVAL_MS, NULL);
-    tmr_log_drain = lv_timer_create(simui_log_drain_timer_cb_, 50, NULL);
-    if (!tmr_net_status || !tmr_engine_ui || !tmr_log_drain) {
-        ESP_LOGE("simui", "UI timer create failed");
-        return false;
-    }
-    return true;
+    if (!tmr_net_status) tmr_net_status = lv_timer_create(simui_net_status_timer_cb_, 500, NULL);
+    if (!tmr_engine_ui) tmr_engine_ui = lv_timer_create(simui_engine_ui_timer_cb_, ENGINE_UI_INTERVAL_MS, NULL);
+    if (!tmr_log_drain) tmr_log_drain = lv_timer_create(simui_log_drain_timer_cb_, 50, NULL);
+    return tmr_net_status && tmr_engine_ui && tmr_log_drain;
 }
 
 static uint32_t simui_group_color_(int idx)
@@ -234,10 +223,10 @@ static void scr_delete_cb(lv_event_t *e)
     if (scr_simui && scr_simui != deleted) return;
     ESP_LOGI("simui", "Screen DELETE event — cleaning up globals");
     for (int g = 0; g < GRP_COUNT; g++) btn_grp[g] = NULL;
-    lbl_net_status = NULL;
-    tmr_net_status = NULL;
-    tmr_engine_ui = NULL;
-    tmr_log_drain = NULL;
+    lbl_net_status = s_baud_dropdown = NULL;
+    if (tmr_net_status) { lv_timer_del(tmr_net_status); tmr_net_status = NULL; }
+    if (tmr_engine_ui) { lv_timer_del(tmr_engine_ui); tmr_engine_ui = NULL; }
+    if (tmr_log_drain) { lv_timer_del(tmr_log_drain); tmr_log_drain = NULL; }
     scr_simui = NULL;
 }
 
@@ -257,6 +246,7 @@ static void simui_update_net_status_(void)
         return;
     }
 
+    ui_baud_selector_sync(s_baud_dropdown);
     wifi_on = wifi_ap_is_enabled();
     if (!wifi_on) {
         lv_obj_clear_flag(lbl_net_status, LV_OBJ_FLAG_HIDDEN);
@@ -305,17 +295,23 @@ static void simui_net_status_timer_cb_(lv_timer_t *tmr)
 static void simui_engine_ui_timer_cb_(lv_timer_t *tmr)
 {
     (void)tmr;
+    if (s_view_suspended) return;
     rs485_engine_flush_ui();
+    for (int g = 0; g < GRP_COUNT; ++g) {
+        if (!btn_grp[g]) continue;
+        if (rs485_engine_group_active(g)) lv_obj_add_state(btn_grp[g], LV_STATE_CHECKED);
+        else lv_obj_clear_state(btn_grp[g], LV_STATE_CHECKED);
+    }
 }
 
 static void simui_log_drain_timer_cb_(lv_timer_t *tmr)
 {
-    simui_log_evt_t evt;
     (void)tmr;
-
-    while (s_log_q && xQueueReceive(s_log_q, &evt, 0) == pdTRUE) {
-        nmea_log_add_plain(evt.line);
-    }
+    if (s_view_suspended || !scr_simui) return;
+    rs485_runtime_event_t event;
+    for (unsigned i = 0; i < RS485_RUNTIME_LOG_CAPACITY &&
+         rs485_simui_runtime_read(&s_view_cursor, &event, NULL); ++i)
+        nmea_log_add(event.data);
 }
 
 static void simui_telnet_rx_cb_(const uint8_t *data, size_t len, void *user)
@@ -388,16 +384,8 @@ static void simui_udp_rx_cb_(const uint8_t *data, size_t len, void *user)
 
 void rs485_simui_log_tx(const char *msg)
 {
-    simui_log_evt_t evt;
-    size_t len;
-
-    if (!msg || !*msg || !s_log_q) return;
-    if (!scr_simui || !lv_obj_is_valid(scr_simui)) return;
-
-    len = strnlen(msg, sizeof(evt.line) - 1);
-    memcpy(evt.line, msg, len);
-    evt.line[len] = '\0';
-    (void)xQueueSend(s_log_q, &evt, 0);
+    if (msg && *msg) rs485_runtime_log_append(&s_runtime_log, RS485_EVENT_TX,
+                                             msg, strnlen(msg, 383u));
 }
 
 /*───────────────────────────────────────────────*/
@@ -420,59 +408,15 @@ static void cb_btn_settings(lv_event_t *e) {
    	 nmea_editor_create();
 }
 
-static void simui_destroy(void)
+void rs485_simui_view_destroy(void)
 {
-    if (!scr_simui) return;
-
-    /* Stop new batches first, then wait for any in-flight UART write. */
-    simui_reset_buttons();
-    if (!rs485_engine_deinit()) {
-        ESP_LOGE("simui", "TX engine is still stopping; screen kept open");
-        return;
-    }
-
-    if (tmr_net_status) {
-        lv_timer_del(tmr_net_status);
-        tmr_net_status = NULL;
-    }
-    if (tmr_log_drain) {
-        lv_timer_del(tmr_log_drain);
-        tmr_log_drain = NULL;
-    }
-    if (tmr_engine_ui) {
-        lv_timer_del(tmr_engine_ui);
-        tmr_engine_ui = NULL;
-    }
-
-    telnet_router_unregister(TELNET_ROUTE_TX485);
-    udp_nmea_server_set_rx_cb(NULL, NULL);
-    s_telnet_line_len = 0;
-    s_udp_line_len = 0;
-    if (s_log_q) {
-        vQueueDelete(s_log_q);
-        s_log_q = NULL;
-    }
-
-    /* Release RS-485 only after the engine no longer uses the UART. */
-    esp_err_t release_err = rs485_release(RS485_OWNER_TRANSMITTER);
-    if (release_err != ESP_OK) {
-        ESP_LOGW("simui", "RS-485 release failed: %s", esp_err_to_name(release_err));
-    }
-    rs485_ready = false;
-
-    /* Load the main screen before deleting the current one. */
-    screen_ui_show();
-
-    /* scr_delete_cb finishes clearing widget pointers on LV_EVENT_DELETE. */
-    lv_obj_t *old = scr_simui;
-    scr_simui = NULL;
-    lv_obj_del_async(old);
+    if (scr_simui && lv_obj_is_valid(scr_simui)) lv_obj_del(scr_simui);
 }
 
 static void cb_btn_back(lv_event_t *e)
 {
     (void)e;
-    simui_destroy();
+    (void)app_controller_local_stop();
 }
 
 /*───────────────────────────────────────────────*/
@@ -480,23 +424,8 @@ static void cb_btn_back(lv_event_t *e)
 /*───────────────────────────────────────────────*/
 lv_obj_t *rs485_simui_create(lv_obj_t *parent)
 {
-    (void)parent;
-    if (scr_simui && s_theme_rev != ui_theme_get_revision()) {
-        simui_destroy();
-    }
-    if (scr_simui) { lv_scr_load(scr_simui); return scr_simui; }
-
-    if (!simui_prepare_port_()) return NULL;
-    simui_build_screen_();
-    if (!simui_start_runtime_()) {
-        simui_destroy();
-        return NULL;
-    }
-
-    lv_scr_load(scr_simui);
-    simui_reset_buttons();
-    s_theme_rev = ui_theme_get_revision();
-    return scr_simui;
+    if (!rs485_simui_runtime_start()) return NULL;
+    return rs485_simui_view_show(parent);
 }
 
 lv_obj_t *rs485_simui_get_screen(void) { return scr_simui; }
@@ -506,4 +435,100 @@ void rs485_simui_flush_log(void)
     if (tmr_log_drain) {
         simui_log_drain_timer_cb_(tmr_log_drain);
     }
+}
+
+
+bool rs485_simui_runtime_running(void)
+{
+    return atomic_load_explicit(&rs485_ready, memory_order_acquire) && rs485_engine_running();
+}
+
+bool rs485_simui_runtime_start(void)
+{
+    if (rs485_simui_runtime_running()) return true;
+    if (!rs485_runtime_log_init(&s_runtime_log) || !simui_prepare_port_()) return false;
+    if (!rs485_engine_init()) {
+        if (rs485_release(RS485_OWNER_TRANSMITTER) == ESP_OK) atomic_store(&rs485_ready, false);
+        return false;
+    }
+    s_telnet_line_len = s_udp_line_len = 0;
+    atomic_store_explicit(&s_accept_writes, true, memory_order_release);
+    telnet_router_register(TELNET_ROUTE_TX485, simui_telnet_rx_cb_, NULL);
+    telnet_router_set_active(TELNET_ROUTE_TX485);
+    udp_nmea_server_set_rx_cb(simui_udp_rx_cb_, NULL);
+    return true;
+}
+
+bool rs485_simui_runtime_stop(void)
+{
+    atomic_store_explicit(&s_accept_writes, false, memory_order_release);
+    for (int g = 0; g < GRP_COUNT; ++g) rs485_engine_set_active(g, false);
+    telnet_router_unregister(TELNET_ROUTE_TX485);
+    udp_nmea_server_set_rx_cb(NULL, NULL);
+    for (unsigned wait = 0; wait < 7000 && atomic_load_explicit(&s_writes_inflight, memory_order_acquire); wait += 10)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if (atomic_load_explicit(&s_writes_inflight, memory_order_acquire)) return false;
+    if (!rs485_engine_deinit()) return false;
+    if (atomic_load(&rs485_ready)) {
+        if (rs485_release(RS485_OWNER_TRANSMITTER) != ESP_OK) return false;
+        atomic_store_explicit(&rs485_ready, false, memory_order_release);
+    }
+    s_telnet_line_len = s_udp_line_len = 0;
+    return true;
+}
+
+esp_err_t rs485_simui_runtime_set_baud(uint32_t baud)
+{
+    return rs485_simui_runtime_running() ? rs485_set_baudrate(baud) : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t rs485_simui_runtime_send(const char *line)
+{
+    char frame[NMEA_SENT_MAX + 3];
+    size_t length = nmea_wire_frame_build(frame, sizeof(frame), line);
+    if (!length) return ESP_ERR_INVALID_ARG;
+    if (!atomic_load_explicit(&s_accept_writes, memory_order_acquire)) return ESP_ERR_INVALID_STATE;
+    atomic_fetch_add_explicit(&s_writes_inflight, 1u, memory_order_acq_rel);
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (atomic_load_explicit(&s_accept_writes, memory_order_acquire) && atomic_load(&rs485_ready)) {
+        result = rs485_driver_write(frame, length);
+        if (result == ESP_OK) {
+            navigation_model_process(frame);
+            rs485_simui_log_tx(frame);
+        }
+    }
+    atomic_fetch_sub_explicit(&s_writes_inflight, 1u, memory_order_release);
+    return result;
+}
+
+bool rs485_simui_runtime_read(uint32_t *cursor, rs485_runtime_event_t *out, uint32_t *dropped)
+{
+    return rs485_runtime_log_read(&s_runtime_log, cursor, out, dropped);
+}
+
+void rs485_simui_view_suspend(bool suspended)
+{
+    s_view_suspended = suspended;
+    lv_timer_t *timers[] = {tmr_net_status, tmr_engine_ui, tmr_log_drain};
+    for (unsigned i = 0; i < sizeof(timers)/sizeof(timers[0]); ++i) {
+        if (!timers[i]) continue;
+        if (suspended) lv_timer_pause(timers[i]); else lv_timer_resume(timers[i]);
+    }
+}
+
+lv_obj_t *rs485_simui_view_show(lv_obj_t *parent)
+{
+    (void)parent;
+    if (scr_simui && s_theme_rev != ui_theme_get_revision()) rs485_simui_view_destroy();
+    if (!scr_simui) {
+        simui_build_screen_();
+        if (!simui_start_ui_timers_()) { rs485_simui_view_destroy(); return NULL; }
+        s_theme_rev = ui_theme_get_revision();
+    }
+    rs485_simui_view_suspend(false);
+    lv_scr_load(scr_simui);
+    simui_update_net_status_();
+    simui_engine_ui_timer_cb_(NULL);
+    simui_log_drain_timer_cb_(NULL);
+    return scr_simui;
 }

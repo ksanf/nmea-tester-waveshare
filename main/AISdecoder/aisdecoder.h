@@ -7,6 +7,7 @@
 
 #include "lvgl.h"
 #include <stdbool.h>
+#include "AISdecoder/aisdecoder_runtime.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,10 @@ extern "C" {
 
 lv_obj_t *aisdecoder_create(lv_obj_t *parent);
 lv_obj_t *aisdecoder_get_screen(void);
+/* Presentation only; call while holding the LVGL lock. */
+void aisdecoder_view_suspend(bool suspended);
+/* Release presentation without selecting a screen or changing RX ownership. */
+void aisdecoder_view_destroy(void);
 
 bool aisdecoder_is_ais_sentence(const char *line);
 void aisdecoder_feed_nmea_line(const char *line);

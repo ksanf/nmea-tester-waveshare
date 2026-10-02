@@ -8,6 +8,7 @@
 #include "config/memory_config.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <esp_event.h>
 #include <esp_log.h>
 #define CFG_LOG_MODULE LOG_CFG_WIFI_AP
@@ -30,6 +31,20 @@ static const char *NVS_NS = "wifi";
 #define NVS_KEY_AP_IP    "ap_ip"
 #define NVS_KEY_STA_SSID "sta_ssid"
 #define NVS_KEY_STA_PASS "sta_pass"
+#define NVS_KEY_AP_CONFIG "ap_config"
+#define NVS_KEY_STA_CONFIG "sta_config"
+#define NVS_CONFIG_VERSION 1u
+
+/* One NVS item per group prevents a partially updated SSID/password/IP pair.
+ * Character arrays give the persisted layout no compiler-dependent padding. */
+typedef struct {
+    uint8_t version;
+    char ssid[33], pass[65], ip[16];
+} wifi_ap_saved_t;
+typedef struct {
+    uint8_t version;
+    char ssid[33], pass[65];
+} wifi_sta_saved_t;
 
 #define AP_SSID_DEFAULT  WIFI_AP_SSID
 #define AP_PASS_DEFAULT  WIFI_AP_PASSWORD
@@ -65,6 +80,7 @@ static char s_sta_pass[65];
 /* ── Forward ─────────────────────────────────────────────────── */
 static esp_err_t apply_ap_(void);
 static esp_err_t apply_sta_(void);
+static esp_err_t parse_ip_(const char *str, esp_netif_ip_info_t *ip);
 
 static esp_err_t stop_wifi_(void)
 {
@@ -106,8 +122,17 @@ static void end_op_(void)
 }
 
 /* ── NVS ──────────────────────────────────────────────────────── */
+static bool saved_credentials_valid_(const char *ssid, const char *pass)
+{
+    const size_t ssid_len = strnlen(ssid, 33);
+    const size_t pass_len = strnlen(pass, 65);
+    return ssid_len > 0 && ssid_len <= 32 &&
+           (pass_len == 0 || (pass_len >= 8 && pass_len <= 63));
+}
+
 static void nvs_load_(void)
 {
+    bool ap_password_saved = false;
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) goto defaults;
 
@@ -116,20 +141,44 @@ static void nvs_load_(void)
     if (nvs_get_blob(h, NVS_KEY_MODE, &m, &sz) == ESP_OK && sz == 1)
         s_mode = (m <= WIFI_MGR_MODE_STA) ? (wifi_mgr_mode_t)m : WIFI_MGR_MODE_AP;
 
+    /* Read legacy keys first so an upgrade preserves existing settings. They
+     * remain untouched when a new configuration group is saved. */
     sz = sizeof(s_ap_ssid); nvs_get_str(h, NVS_KEY_AP_SSID, s_ap_ssid, &sz);
-    sz = sizeof(s_ap_pass); nvs_get_str(h, NVS_KEY_AP_PASS, s_ap_pass, &sz);
+    sz = sizeof(s_ap_pass); ap_password_saved = nvs_get_str(h, NVS_KEY_AP_PASS, s_ap_pass, &sz) == ESP_OK;
     sz = sizeof(s_ap_ip);   nvs_get_str(h, NVS_KEY_AP_IP,   s_ap_ip,   &sz);
     sz = sizeof(s_sta_ssid); nvs_get_str(h, NVS_KEY_STA_SSID, s_sta_ssid, &sz);
     sz = sizeof(s_sta_pass); nvs_get_str(h, NVS_KEY_STA_PASS, s_sta_pass, &sz);
+
+    wifi_ap_saved_t ap = {0};
+    esp_netif_ip_info_t parsed_ip;
+    sz = sizeof(ap);
+    if (nvs_get_blob(h, NVS_KEY_AP_CONFIG, &ap, &sz) == ESP_OK &&
+        sz == sizeof(ap) && ap.version == NVS_CONFIG_VERSION &&
+        saved_credentials_valid_(ap.ssid, ap.pass) &&
+        memchr(ap.ip, 0, sizeof(ap.ip)) && parse_ip_(ap.ip, &parsed_ip) == ESP_OK) {
+        memcpy(s_ap_ssid, ap.ssid, sizeof(s_ap_ssid));
+        memcpy(s_ap_pass, ap.pass, sizeof(s_ap_pass));
+        memcpy(s_ap_ip, ap.ip, sizeof(s_ap_ip));
+        ap_password_saved = true;
+    }
+    wifi_sta_saved_t sta = {0};
+    sz = sizeof(sta);
+    if (nvs_get_blob(h, NVS_KEY_STA_CONFIG, &sta, &sz) == ESP_OK &&
+        sz == sizeof(sta) && sta.version == NVS_CONFIG_VERSION &&
+        saved_credentials_valid_(sta.ssid, sta.pass)) {
+        memcpy(s_sta_ssid, sta.ssid, sizeof(s_sta_ssid));
+        memcpy(s_sta_pass, sta.pass, sizeof(s_sta_pass));
+    }
     nvs_close(h);
 
 defaults:
     if (!s_ap_ssid[0]) strlcpy(s_ap_ssid, AP_SSID_DEFAULT, sizeof(s_ap_ssid));
-    if (!s_ap_pass[0]) strlcpy(s_ap_pass, AP_PASS_DEFAULT, sizeof(s_ap_pass));
+    /* An explicitly saved empty password means an open AP, including on reboot. */
+    if (!ap_password_saved) strlcpy(s_ap_pass, AP_PASS_DEFAULT, sizeof(s_ap_pass));
     if (!s_ap_ip[0])   strlcpy(s_ap_ip,   AP_IP_DEFAULT,   sizeof(s_ap_ip));
 }
 
-static esp_err_t nvs_save_(const char *key, const char *val)
+static esp_err_t nvs_save_blob_(const char *key, const void *data, size_t size)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
@@ -137,35 +186,14 @@ static esp_err_t nvs_save_(const char *key, const char *val)
         ESP_LOGW(TAG, "NVS open failed for %s: %s", key, esp_err_to_name(err));
         return err;
     }
-
-    err = nvs_set_str(h, key, val);
-    if (err == ESP_OK) {
-        err = nvs_commit(h);
-    }
+    err = nvs_set_blob(h, key, data, size);
+    if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "NVS save failed for %s: %s", key, esp_err_to_name(err));
     }
-    return err;
-}
-
-static esp_err_t nvs_save_mode_(wifi_mgr_mode_t m)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "NVS open failed for %s: %s", NVS_KEY_MODE, esp_err_to_name(err));
-        return err;
-    }
-    uint8_t v = (uint8_t)m;
-    err = nvs_set_blob(h, NVS_KEY_MODE, &v, 1);
-    if (err == ESP_OK) {
-        err = nvs_commit(h);
-    }
-    nvs_close(h);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "NVS save failed for %s: %s", NVS_KEY_MODE, esp_err_to_name(err));
-    }
+    /* NVS may have persisted a set before a commit failure. Report that error;
+     * never claim a successful save or apply it to the active radio/RAM. */
     return err;
 }
 
@@ -192,6 +220,7 @@ static esp_err_t parse_ip_(const char *str, esp_netif_ip_info_t *ip)
 static void wifi_evt_(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
+    (void)data;
     if (base != WIFI_EVENT) return;
     switch (id) {
     case WIFI_EVENT_AP_START:       ESP_LOGI(TAG, "AP started: %s", s_ap_ssid); break;
@@ -429,8 +458,13 @@ esp_err_t wifi_manager_set_mode(wifi_mgr_mode_t mode)
         if (err != ESP_OK) return err;
     }
     if (!begin_op_("set_mode")) return ESP_ERR_INVALID_STATE;
+    const uint8_t saved_mode = (uint8_t)mode;
+    esp_err_t err = nvs_save_blob_(NVS_KEY_MODE, &saved_mode, sizeof(saved_mode));
+    if (err != ESP_OK) {
+        end_op_();
+        return err;
+    }
     const bool restart = s_wifi_started;
-    esp_err_t err = ESP_OK;
     if (restart) {
         err = stop_wifi_();
         if (err != ESP_OK) {
@@ -441,7 +475,6 @@ esp_err_t wifi_manager_set_mode(wifi_mgr_mode_t mode)
     s_mode = mode;
     s_sta_state = WIFI_MGR_DISCONNECTED;
     s_user_disconnect = false;
-    (void)nvs_save_mode_(mode);
     if (restart) {
         err = (mode == WIFI_MGR_MODE_AP) ? apply_ap_() : apply_sta_();
         if (err != ESP_OK) {
@@ -470,13 +503,18 @@ esp_err_t wifi_manager_ap_set(const char *ssid, const char *pass, const char *ip
         return ESP_ERR_INVALID_ARG;
     }
     if (!begin_op_("ap_set")) return ESP_ERR_INVALID_STATE;
-    strlcpy(s_ap_ssid, ssid, sizeof(s_ap_ssid));
-    if (pass) strlcpy(s_ap_pass, pass, sizeof(s_ap_pass));
-    if (ip && ip[0]) strlcpy(s_ap_ip, ip, sizeof(s_ap_ip));
-    (void)nvs_save_(NVS_KEY_AP_SSID, s_ap_ssid);
-    (void)nvs_save_(NVS_KEY_AP_PASS, s_ap_pass);
-    (void)nvs_save_(NVS_KEY_AP_IP, s_ap_ip);
-    esp_err_t err = ESP_OK;
+    wifi_ap_saved_t next = {.version = NVS_CONFIG_VERSION};
+    strlcpy(next.ssid, ssid, sizeof(next.ssid));
+    strlcpy(next.pass, pass ? pass : s_ap_pass, sizeof(next.pass));
+    strlcpy(next.ip, (ip && ip[0]) ? ip : s_ap_ip, sizeof(next.ip));
+    esp_err_t err = nvs_save_blob_(NVS_KEY_AP_CONFIG, &next, sizeof(next));
+    if (err != ESP_OK) {
+        end_op_();
+        return err;
+    }
+    memcpy(s_ap_ssid, next.ssid, sizeof(s_ap_ssid));
+    memcpy(s_ap_pass, next.pass, sizeof(s_ap_pass));
+    memcpy(s_ap_ip, next.ip, sizeof(s_ap_ip));
     if (s_mode == WIFI_MGR_MODE_AP && s_wifi_started) {
         err = stop_wifi_();
         if (err == ESP_OK) err = apply_ap_();
@@ -505,12 +543,17 @@ esp_err_t wifi_manager_sta_set(const char *ssid, const char *pass)
         return ESP_ERR_INVALID_ARG;
     }
     if (!begin_op_("sta_set")) return ESP_ERR_INVALID_STATE;
+    wifi_sta_saved_t next = {.version = NVS_CONFIG_VERSION};
+    strlcpy(next.ssid, ssid, sizeof(next.ssid));
+    strlcpy(next.pass, pass ? pass : s_sta_pass, sizeof(next.pass));
+    esp_err_t err = nvs_save_blob_(NVS_KEY_STA_CONFIG, &next, sizeof(next));
+    if (err != ESP_OK) {
+        end_op_();
+        return err;
+    }
     s_user_disconnect = false;
-    strlcpy(s_sta_ssid, ssid, sizeof(s_sta_ssid));
-    if (pass) strlcpy(s_sta_pass, pass, sizeof(s_sta_pass));
-    (void)nvs_save_(NVS_KEY_STA_SSID, s_sta_ssid);
-    (void)nvs_save_(NVS_KEY_STA_PASS, s_sta_pass);
-    esp_err_t err = ESP_OK;
+    memcpy(s_sta_ssid, next.ssid, sizeof(s_sta_ssid));
+    memcpy(s_sta_pass, next.pass, sizeof(s_sta_pass));
     if (s_mode == WIFI_MGR_MODE_STA && s_wifi_started) {
         err = stop_wifi_();
         if (err == ESP_OK) {

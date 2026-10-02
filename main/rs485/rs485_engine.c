@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "lvgl.h"
+#include "rs485/rs485_simui.h"
+#include "app/navigation_model.h"
 #include "config/config_nmea_tester.h"
 #include "config/memory_config.h"
 #include "rs485/rs485_engine.h"
@@ -37,11 +38,6 @@ typedef struct {
     bool motion_time_valid;
 } group_t;
 
-typedef struct {
-    uint8_t count;
-    char lines[MAX_LINES_IN_GRP][NMEA_SENT_MAX];
-} ui_packet_t;
-
 /* A full-size frame at 2400 baud may keep a write busy for almost 5 seconds. */
 #define ENGINE_STOP_WAIT_MS 6000U
 #define ENGINE_STOP_POLL_MS   10U
@@ -50,10 +46,6 @@ static _Atomic(TaskHandle_t) s_engine_task = NULL;
 static atomic_bool s_engine_stop = ATOMIC_VAR_INIT(false);
 
 static char (*s_lines_global)[NMEA_SENT_MAX] = NULL;
-static QueueHandle_t s_ui_queue[GRP_COUNT] = {0};
-static ui_packet_t s_ui_publish_work;
-static ui_packet_t s_ui_flush_work;
-
 static bool stop_requested_(void)
 {
     return atomic_load_explicit(&s_engine_stop, memory_order_acquire);
@@ -72,45 +64,6 @@ static void lines_free_(void)
     s_lines_global = NULL;
 }
 
-static void ui_queues_delete_(void)
-{
-    for (int grp = 0; grp < GRP_COUNT; ++grp) {
-        if (s_ui_queue[grp]) {
-            vQueueDelete(s_ui_queue[grp]);
-            s_ui_queue[grp] = NULL;
-        }
-    }
-}
-
-static bool ui_queues_create_(void)
-{
-    ui_queues_delete_();
-    for (int grp = 0; grp < GRP_COUNT; ++grp) {
-        /* Length one is intentional: the display only needs the newest frame. */
-        s_ui_queue[grp] = xQueueCreate(1, sizeof(ui_packet_t));
-        if (!s_ui_queue[grp]) {
-            ui_queues_delete_();
-            return false;
-        }
-    }
-    return true;
-}
-
-static void ui_publish_latest_(rs485_group_t grp,
-                               char lines[][NMEA_SENT_MAX], uint8_t count)
-{
-    if (grp >= GRP_COUNT || !s_ui_queue[grp]) return;
-    if (count > MAX_LINES_IN_GRP) count = MAX_LINES_IN_GRP;
-
-    s_ui_publish_work.count = count;
-    for (uint8_t i = 0; i < count; ++i) {
-        const size_t len = strnlen(lines[i], NMEA_SENT_MAX - 1u);
-        memcpy(s_ui_publish_work.lines[i], lines[i], len);
-        s_ui_publish_work.lines[i][len] = '\0';
-    }
-    (void)xQueueOverwrite(s_ui_queue[grp], &s_ui_publish_work);
-}
-
 extern void regen_gps    (char (*)[NMEA_SENT_MAX], uint8_t *);
 extern void regen_gyro   (char (*)[NMEA_SENT_MAX], uint8_t *);
 extern void regen_log    (char (*)[NMEA_SENT_MAX], uint8_t *);
@@ -127,14 +80,13 @@ static group_t G[GRP_COUNT] = {
 
 static uint32_t period_ms(rs485_group_t grp)
 {
-    nmea_gyro_t gyro = {0};
-    if (grp == GRP_GYRO) nmea_templates_gyro_snapshot(&gyro);
+    nmea_templates_snapshot_t templates;
+    nmea_templates_snapshot_all(&templates);
     float hz =
-        (grp == GRP_GPS ) ? g_nmea_gps.rate_hz     :
-        (grp == GRP_GYRO) ? gyro.rate_hz           :
-        (grp == GRP_LOG ) ? g_nmea_log.rate_hz     :
-        (grp == GRP_ECHO) ? g_nmea_echo.rate_hz    :
-                            g_nmea_weather.rate_hz;
+        (grp == GRP_GPS ) ? templates.gps.rate_hz :
+        (grp == GRP_GYRO) ? templates.gyro.rate_hz :
+        (grp == GRP_LOG ) ? templates.log.rate_hz :
+        (grp == GRP_ECHO) ? templates.echo.rate_hz : templates.weather.rate_hz;
     if (hz < 0.5f)  hz = 0.5f;
     if (hz > 10.0f) hz = 10.0f;
     return (uint32_t)(1000.0f / hz + 0.5f);
@@ -142,35 +94,19 @@ static uint32_t period_ms(rs485_group_t grp)
 
 void rs485_engine_flush_ui(void)
 {
-    bool updated = false;
-
-    for (int grp = 0; grp < GRP_COUNT; ++grp) {
-        if (!s_ui_queue[grp] ||
-            xQueueReceive(s_ui_queue[grp], &s_ui_flush_work, 0) != pdTRUE) {
-            continue;
-        }
-        for (uint8_t i = 0; i < s_ui_flush_work.count; ++i) {
-            instrument_panel_process(s_ui_flush_work.lines[i]);
-            nmea_log_add(s_ui_flush_work.lines[i]);
-        }
-        updated = true;
-    }
-
-    if (updated) instrument_panel_flush();
+    instrument_panel_flush();
 }
 
 static void dump_mem(void)
 {
     uint32_t free_dram = esp_get_free_heap_size();
     uint32_t min_dram  = esp_get_minimum_free_heap_size();
-    lv_mem_monitor_t mon; lv_mem_monitor(&mon);
-    ESP_LOGI("MEM", "free=%u  min=%u | lv_free=%u frag=%u%%",
-             free_dram, min_dram, (uint32_t)mon.free_size, mon.frag_pct);
+    ESP_LOGI("MEM", "free=%u min=%u", free_dram, min_dram);
 }
 
 void rs485_engine_set_active(rs485_group_t grp, bool on)
 {
-    if (grp >= GRP_COUNT) return;
+    if ((unsigned)grp >= GRP_COUNT) return;
 
     if (on) {
         /* Publish dirty before active so the engine regenerates immediately. */
@@ -186,14 +122,12 @@ void rs485_engine_set_active(rs485_group_t grp, bool on)
         atomic_store_explicit(&G[grp].motion_reset, true, memory_order_release);
     }
 
-    if (!on && s_ui_queue[grp]) {
-        (void)xQueueReset(s_ui_queue[grp]);
-    }
+
 }
 
 void rs485_engine_mark_dirty(rs485_group_t grp)
 {
-    if (grp < GRP_COUNT) {
+    if ((unsigned)grp < GRP_COUNT) {
         atomic_store_explicit(&G[grp].dirty, true, memory_order_release);
         if (grp == GRP_GYRO) {
             /* A newly edited heading or ROT starts a fresh time anchor. */
@@ -258,14 +192,13 @@ static void engine_task(void *arg)
                     if (rs485_driver_write(frame, frame_len) != ESP_OK) {
                         ESP_LOGW("ENGINE", "tx failed grp=%d line=%u len=%u",
                                  g, (unsigned)i, (unsigned)frame_len);
+                    } else {
+                        navigation_model_process(lines[i]);
+                        rs485_simui_log_tx(frame);
                     }
                 }
 
-                /* --- 2. Replace the group's pending UI snapshot. ---------- */
-                if (!stop_requested_() &&
-                    atomic_load_explicit(&gp->active, memory_order_acquire)) {
-                    ui_publish_latest_((rs485_group_t)g, lines, cnt);
-                }
+
             }
         }
 
@@ -293,17 +226,10 @@ bool rs485_engine_init(void)
         ESP_LOGE("ENGINE", "line buffer alloc failed");
         return false;
     }
-    if (!ui_queues_create_()) {
-        ESP_LOGE("ENGINE", "UI snapshot queue alloc failed");
-        lines_free_();
-        return false;
-    }
-
     atomic_store_explicit(&s_engine_stop, false, memory_order_release);
     rc = xTaskCreatePinnedToCore(engine_task, "nmeaEngine", 5120, NULL, 3, &task, 1);
     if (rc != pdPASS) {
         ESP_LOGE("ENGINE", "task create failed");
-        ui_queues_delete_();
         lines_free_();
         return false;
     }
@@ -314,7 +240,6 @@ bool rs485_engine_init(void)
 bool rs485_engine_deinit(void)
 {
     if (!atomic_load_explicit(&s_engine_task, memory_order_acquire)) {
-        ui_queues_delete_();
         lines_free_();
         return true;
     }
@@ -339,7 +264,6 @@ bool rs485_engine_deinit(void)
     }
 
     lines_free_();
-    ui_queues_delete_();
 
     for (int i = 0; i < GRP_COUNT; i++) {
         atomic_store_explicit(&G[i].active, false, memory_order_release);
@@ -352,4 +276,15 @@ bool rs485_engine_deinit(void)
 
     ESP_LOGI("ENGINE", "Deinitialized");
     return true;
+}
+
+
+bool rs485_engine_running(void)
+{
+    return atomic_load_explicit(&s_engine_task, memory_order_acquire) != NULL;
+}
+
+bool rs485_engine_group_active(rs485_group_t grp)
+{
+    return (unsigned)grp < GRP_COUNT && atomic_load_explicit(&G[grp].active, memory_order_acquire);
 }

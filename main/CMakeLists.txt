@@ -2,6 +2,11 @@ idf_component_register(
     SRCS
         # Application entry point
         app_main.c
+        app/app_controller.c
+        app/navigation_model.c
+        web/web_session.c
+        web/web_server.c
+        web/web_templates.c
 
         # Local Waveshare LVGL port
         lvgl_port/waveshare_lvgl_port.c
@@ -12,6 +17,7 @@ idf_component_register(
         ui/screens/screen_ui.c
         ui/screens/screen_settings.c
         ui/screens/screen_wifi.c
+        ui/screens/screen_web.c
 
         # UI widgets
         ui/dialog_ui.c
@@ -20,6 +26,7 @@ idf_component_register(
         ui/ui_baud_selector.c
         ui/instrument_panel.c
         ui/nmea_log.c
+        ui/nmea_log_markup.c
         ui/lv_font_unscii_16.c
 
         # Touch driver
@@ -37,10 +44,12 @@ idf_component_register(
         AISdecoder/aisdecoder_ui.c
         AISdecoder/aisdecoder_parse.c
         AISdecoder/aisdecoder_decode.c
+        AISdecoder/aisdecoder_runtime.c
 
         # CAN
         can_module/driver/can_driver.c
         can_module/screen_can.c
+        can_module/nm2k_module/nm2k_identity.c
         can_module/nm2k_module/nm2k_module.c
         can_module/nm2k_module/nm2k_decoder.c
         can_module/nm2k_module/nm2k_decoder_fluid_level.c
@@ -50,19 +59,18 @@ idf_component_register(
         can_module/nm2k_module/nm2k_decoder_nav.c
         can_module/nm2k_module/nm2k_decoder_engine.c
         can_module/bridge_can_module/bridge_can_module.c
+        can_module/bridge_can_module/protocol_poll_worker.c
         can_module/bridge_can_module/protocol_handler.c
         can_module/bridge_can_module/buffer_manager.c
         can_module/driver/serial_comm.c
-
-        # Hardware-independent TT-6194 to TT-3027 protocol core
+        # Hardware-independent TT6006 / TT3027 protocol profile
         can_module/protocol/src/fsm.c
-        can_module/protocol/src/L5_service.c
-        can_module/protocol/src/strategy_map.c
+        can_module/protocol/src/sailor_telemetry.c
+        can_module/protocol/src/sailor_status_format.c
+        can_module/protocol/src/sailor_ndp_pages.c
+        can_module/protocol/src/sailor_ndp_session.c
         can_module/protocol/src/l2_link.c
         can_module/protocol/src/l3l4_transport.c
-        can_module/protocol/src/L5_terminal.c
-        can_module/protocol/src/tlv_codec.c
-        can_module/protocol/src/fsm_actions.c
 
         # NMEA 2000 driver
         can_module/n2k_driver/src/n2k_addr_claim.c
@@ -90,10 +98,12 @@ idf_component_register(
         nmea_editor/nmea_tabs_weather.c
 
         # System modules
+        system/port_activity.c
         system/nmea_clock.c
         system/rtc_driver.c
         system/nvs_rw.c
         system/telnet_router.c
+        system/telnet_rx.c
         system/telnet_server.c
         system/udp_nmea_server.c
         system/board_waveshare.c
@@ -131,4 +141,21 @@ idf_component_register(
         esp_wifi
         esp_timer
         esp_app_format
+        esp_http_server
+        json
 )
+
+# Generate a deterministic gzip asset in the build tree, then embed it in flash.
+# RENAME_TO keeps the linker ABI stable regardless of the source/build paths.
+idf_build_get_property(web_asset_python PYTHON)
+set(web_asset "${CMAKE_CURRENT_BINARY_DIR}/index.html.gz")
+add_custom_command(
+    OUTPUT "${web_asset}"
+    COMMAND "${web_asset_python}" "${CMAKE_CURRENT_SOURCE_DIR}/web/build_assets.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/web/index.html" "${web_asset}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/web/build_assets.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"
+    COMMENT "Compressing the embedded web interface"
+    VERBATIM
+)
+target_add_binary_data(${COMPONENT_LIB} "${web_asset}" BINARY RENAME_TO index_html_gz)

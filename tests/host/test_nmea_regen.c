@@ -428,3 +428,7 @@ int main(void)
     puts("NMEA regeneration tests passed (21 formats, 5 profiles, ROT motion)");
     return EXIT_SUCCESS;
 }
+
+void nmea_templates_log_snapshot(nmea_log_t *out) { *out = g_nmea_log; }
+void nmea_templates_echo_snapshot(nmea_echo_t *out) { *out = g_nmea_echo; }
+void nmea_templates_weather_snapshot(nmea_weather_t *out) { *out = g_nmea_weather; }

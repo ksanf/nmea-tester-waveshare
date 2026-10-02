@@ -1,0 +1,100 @@
+TT6006 CAN service profile
+
+SCOPE
+The SAILOR bridge provides TT3027 antenna status and a Mini-C service terminal
+through a TT6006-style CAN service client. It is not a complete TT6006 replacement
+for messaging, GMDSS, distress operation, or IP services. PPP service 4 is not
+advertised or emulated. Service 6 is not used.
+
+IDENTITY AND DISCOVERY
+fsm.c derives the bridge's NAME identity and decimal serial from its ESP MAC.
+The NAME preserves compatibility fields manufacturer 351, function 160 and
+class 80, with a device-dependent 21-bit identity derived from the MAC hash.
+This is stable across reboots, not a random or assigned vendor serial; the
+21-bit field cannot guarantee collision-free identities. The profile fields
+do not imply vendor approval or identify the tester as genuine SAILOR hardware.
+
+The bridge announces device type 1, profile version 1.0 and no inbound services.
+It discovers the antenna NAME, serial and service ports from validated responses.
+No captured antenna identity is used as a production default. The peer NAME is
+pinned for the lifetime of the bridge; a changed source address requires a
+matching address claim. Discovery can succeed after an initial response without
+services, when a later announcement exposes the required services.
+
+LAYERS
+Classic extended CAN carries the J1939-style ID and address claim. Fast Packet
+carries the proprietary NDP discovery and service traffic. Two independent NDP
+connections carry binary telemetry (local port 1 / discovered service 1) and the
+Mini-C terminal (local port 3 / discovered service 2).
+
+fsm.c owns address claim, discovery, peer liveness and serialized integration.
+A dedicated can_fsm worker runs its 20 ms poll outside ESP_TIMER_TASK. Slow CAN
+writes or locks therefore do not block the shared LVGL timer. Missed polls
+coalesce; shutdown joins the worker before releasing profile and transport
+resources. A timed-out join retains resources for a later stop attempt.
+
+l2_link.c accepts extended data frames only, rejecting RTR, DLC above 8 and
+invalid CAN IDs before protocol decoding. It clears the receive object each
+time and checks only fields populated by the ESP-IDF 5.5 legacy TWAI receive
+API. That API does not populate the deprecated dlc_non_comp flag.
+
+sailor_ndp_session.c owns bounded connection queues, channel/NAME validation,
+OPEN/ACCEPT/ABORT, independent 3-bit TX/RX sequences and complete-message ACKs.
+sailor_ndp_pages.c and l3l4_transport.c encode/reassemble up to 512 application
+bytes across 223-byte Fast Packets. One TX lock covers all pages of a message.
+sailor_telemetry.c owns upper binary headers, CRC-16/X25, ACK/NAK/ENQ, two
+outstanding requests, polling and cached status/freshness.
+protocol_handler.c owns UART, browser and Telnet routing. A full terminal output
+queue applies backpressure before NDP acknowledgement. Input owner changes
+cancel retained terminal transmissions; disconnect discards unsubmitted input.
+
+NDP DELIVERY
+There are two connections, with four queued 512-byte messages per connection.
+The portable manager uses no heap allocation. DATA retries retain the sequence
+and bytes, with an initial transmission plus two retries at 1350 ms. Duplicates
+are acknowledged without repeated delivery. Invalid sequences cause Abort and
+reconnect. Binary and terminal failures are isolated.
+
+Address changes clear affected transport epochs and queued messages. Application
+input is never replayed across reconnect by the bridge. Fast Packet timeout is
+850 ms; partial NDP receive timeout is 1100 ms.
+
+BINARY CLIENT
+The upper ACK timer starts after NDP acknowledges the complete binary packet.
+It waits 10 seconds and allows two upper retries. Deadlines are per packet.
+Upper ACK confirms receipt, not successful application work.
+
+Clock, position and signal polling are separate; antenna identity comes from
+discovery. Read-only network requests are 204C (registration), 2073 (MES protocol),
+2043 (channel state) and 2054 (TDM channel), at five-second intervals. Seven poll
+groups rotate through the two-request window so position polling cannot starve
+network status. Each network group expires independently after 15 seconds and
+needs a new response in the current session after reconnect.
+
+NETWORK STATUS
+The local screen and browser share English labels for current ocean, network
+registration, protocol and TDM channel. Ocean comes from registered NCS / 100 in
+404C while DATA0 == 0 (logged in). It is not the preferred-ocean setting. A
+nonzero registration value clears the response's ocean/NCS/channel values.
+The displayed TDM channel comes independently from 4054. 4073 DATA1 maps to the
+implemented protocol-label table; unknown values remain explicitly unknown.
+4043 channel state is retained raw without guessed labels.
+
+Cached values are marked stale while disconnected or expired; missing values
+remain unavailable. The poller issues no Login/Logout/Scan/PV/Clear or other
+control request. Terminal commands remain a separate, user-directed channel.
+Signed S/W coordinates, invalid-fix flags and stale position timestamps are
+handled. Valid unsupported upper packets are acknowledged but not decoded.
+Multi-fragment binary application responses are not reassembled yet.
+
+VALIDATION
+Run make -C tests/host test with ESP-IDF available for the cJSON dependency.
+Portable NDP, page codec, binary client and integration tests cover protocol
+vectors, dynamic ports, NAME/SA changes, packet loss, duplicates, bounded queues,
+backpressure, late callbacks and timer rollover. L2/worker tests exercise
+partial TWAI message writes, RTR rejection, task creation failure and shutdown.
+
+The tests use host platform doubles and do not certify interoperability with
+every antenna or firmware revision. Real CAN load, reconnect, antenna restart,
+terminal operation and long-duration behavior require hardware validation.
+Vendor binaries, device captures and SSH access are not build dependencies.

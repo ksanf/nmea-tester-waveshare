@@ -9,6 +9,7 @@
 #include <esp_err.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include "rs485/rs485_engine.h"
 
 /* ─────────── Shared limits ─────────── */
@@ -166,8 +167,27 @@ void nmea_templates_gyro_update_fields(const nmea_gyro_t *src, uint32_t fields);
 void nmea_templates_gyro_advance(uint32_t elapsed_ms);
 
 esp_err_t nmea_templates_init(void);
+/* Boot only: load/migrate/sanitize before any template reader/writer starts. */
 esp_err_t nmea_templates_load(void);
 esp_err_t nmea_templates_save_now(void);
 void nmea_templates_schedule_save(void);
+
+
+/* Coherent snapshots and masked updates for the controller/web adapter.
+ * The mask is one byte per structure byte; unselected clock/ROT fields survive. */
+typedef struct {
+    nmea_gps_t gps; nmea_gyro_t gyro; nmea_log_t log;
+    nmea_echo_t echo; nmea_weather_t weather;
+} nmea_templates_snapshot_t;
+void nmea_templates_snapshot_all(nmea_templates_snapshot_t *out);
+esp_err_t nmea_templates_patch(rs485_group_t group, const void *src,
+                               const uint8_t *mask, size_t size);
+void nmea_templates_log_snapshot(nmea_log_t *out);
+void nmea_templates_echo_snapshot(nmea_echo_t *out);
+void nmea_templates_weather_snapshot(nmea_weather_t *out);
+
+/* For local widget bindings: the destination pointer is only a field identity.
+ * Its range is checked against the registered templates before a masked write. */
+esp_err_t nmea_templates_write_field(void *field, const void *value, size_t size);
 
 #endif /* NMEA_TEMPLATES_H */

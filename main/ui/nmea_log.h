@@ -40,3 +40,7 @@ void nmea_log_clear(void);
 
 /** Select the tall condensed presentation used by raw hex dumps. */
 void nmea_log_set_raw_mode(bool enabled);
+
+/** Pause/resume only the presentation timer; retained log/markup is unchanged.
+ * Call from the LVGL task or while holding its lock. */
+void nmea_log_view_suspend(bool suspended);

@@ -4,11 +4,11 @@
  */
 
 #include "ui/nmea_log.h"
+#include "ui/nmea_log_markup.h"
 #include "config/memory_config.h"
 #include "ui/ui_colors.h"
 #include "ui/ui_theme.h"
 #include "lvgl.h"
-#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,7 +42,8 @@ static bool auto_scroll_enabled = true;
 static bool dirty = false;                   /* Flag for batch update        */
 static lv_timer_t *update_timer = NULL;      /* Timer for batch update       */
 
-static char *bigbuf = NULL;                  /* Module work buffer           */
+static char *bigbuf = NULL;                  /* Module work buffer      */
+static uint16_t wrap_width_px = 0u;
 
 static bool buffers_ready_(void)
 {
@@ -78,39 +79,39 @@ static uint32_t log_text_hex_(void)
     return (ui_theme_get_id() == UI_THEME_COLOR) ? UI_NMEA_LOG_TEXT_HEX : ui_theme_get()->text;
 }
 
-static const char *log_pfx_hex_(void)
+static uint32_t log_pfx_hex_(void)
 {
     switch (ui_theme_get_id()) {
-        case UI_THEME_METAL: return "606870";
-        case UI_THEME_BW:    return "d0d0d0";
-        default:             return "f0f0f0";
+        case UI_THEME_METAL: return UINT32_C(0x606870);
+        case UI_THEME_BW:    return UINT32_C(0xD0D0D0);
+        default:             return UINT32_C(0xF0F0F0);
     }
 }
 
-static const char *log_talker_hex_(void)
+static uint32_t log_talker_hex_(void)
 {
     switch (ui_theme_get_id()) {
-        case UI_THEME_METAL: return "2f3943";
-        case UI_THEME_BW:    return "ffffff";
-        default:             return "ffff00";
+        case UI_THEME_METAL: return UINT32_C(0x2F3943);
+        case UI_THEME_BW:    return UINT32_C(0xFFFFFF);
+        default:             return UINT32_C(0xFFFF00);
     }
 }
 
-static const char *log_field_hex_(void)
+static uint32_t log_field_hex_(void)
 {
     switch (ui_theme_get_id()) {
-        case UI_THEME_METAL: return "1f252b";
-        case UI_THEME_BW:    return "ffffff";
-        default:             return "00ff00";
+        case UI_THEME_METAL: return UINT32_C(0x1F252B);
+        case UI_THEME_BW:    return UINT32_C(0xFFFFFF);
+        default:             return UINT32_C(0x00FF00);
     }
 }
 
-static const char *log_crc_hex_(void)
+static uint32_t log_crc_hex_(void)
 {
     switch (ui_theme_get_id()) {
-        case UI_THEME_METAL: return "8e99a4";
-        case UI_THEME_BW:    return "c0c0c0";
-        default:             return "ff0000";
+        case UI_THEME_METAL: return UINT32_C(0x8E99A4);
+        case UI_THEME_BW:    return UINT32_C(0xC0C0C0);
+        default:             return UINT32_C(0xFF0000);
     }
 }
 
@@ -142,44 +143,31 @@ static size_t sanitize_copy_(char *dst, size_t dst_sz, const char *src)
     return i;
 }
 
-static bool append_raw_recolor_span_(char *dst, size_t dst_sz, size_t *dst_len,
-                                     uint32_t color, const char *src, size_t src_len)
+static void buf_push_plain_(const char *s)
 {
-    char color_cmd[9];
-    int color_cmd_len;
+    char escaped[COLS];
 
-    if (!dst || !dst_len || !src || *dst_len >= dst_sz) return false;
+    if (!nmea_log_markup_escape_plain(escaped, sizeof(escaped), s)) {
+        size_t dst_len = 0u;
 
-    color_cmd_len = snprintf(color_cmd, sizeof(color_cmd),
-                             "#%06" PRIX32 " ", color & UINT32_C(0xFFFFFF));
-    if (color_cmd_len < 0 || (size_t)color_cmd_len >= sizeof(color_cmd) ||
-        *dst_len + (size_t)color_cmd_len + 2u > dst_sz) {
-        return false;
-    }
-    memcpy(dst + *dst_len, color_cmd, (size_t)color_cmd_len);
-    *dst_len += (size_t)color_cmd_len;
-
-    for (size_t i = 0; i < src_len; i++) {
-        if (src[i] == '#') {
-            const size_t escaped_len = 3u + (size_t)color_cmd_len;
-
-            /* Close the span, emit ## as a literal #, then restore color. */
-            if (*dst_len + escaped_len + 2u > dst_sz) return false;
-            dst[(*dst_len)++] = '#';
-            dst[(*dst_len)++] = '#';
-            dst[(*dst_len)++] = '#';
-            memcpy(dst + *dst_len, color_cmd, (size_t)color_cmd_len);
-            *dst_len += (size_t)color_cmd_len;
-        } else {
-            /* Keep room for the closing recolor marker and NUL. */
-            if (*dst_len + 3u > dst_sz) return false;
-            dst[(*dst_len)++] = src[i];
+        ESP_LOGW("nmea_log", "Plain line too long after escaping; truncated");
+        while (*s && dst_len + ((*s == '#') ? 2u : 1u) < sizeof(escaped)) {
+            if (*s == '#') escaped[dst_len++] = '#';
+            escaped[dst_len++] = *s++;
         }
+        escaped[dst_len] = '\0';
     }
+    buf_push(escaped);
+}
 
-    dst[(*dst_len)++] = '#';
-    dst[*dst_len] = '\0';
-    return true;
+static uint16_t glyph_width_(unsigned char current,
+                             unsigned char next,
+                             void *context)
+{
+    const lv_font_t *font = (const lv_font_t *)context;
+    lv_coord_t width = lv_font_get_glyph_width(font, current, next);
+
+    return width > 0 ? (uint16_t)width : 0u;
 }
 
 static bool is_nmea_like_(const char *s, const char **body_out, char *prefix_out)
@@ -209,58 +197,40 @@ static bool is_nmea_like_(const char *s, const char **body_out, char *prefix_out
     return true;
 }
 
-static void add_colored_nmea_(const char *body, char prefix)
+static void add_colored_nmea_(const char *plain, const char *body, char prefix)
 {
-    char pre[2] = {0};
-    char talk[6] = {0};
-    char fields[128] = {0};
-    char crc[8] = {0};
     char line[COLS];
-    const char *c_pfx = log_pfx_hex_();
-    const char *c_talker = log_talker_hex_();
-    const char *c_field = log_field_hex_();
-    const char *c_crc = log_crc_hex_();
-    const char *p_fields = strchr(body, ',');
-    const char *p_crc = strchr(body, '*');
-    size_t fields_len = 0;
+    const char *fields = body + 5;
+    const char *crc = strchr(fields, '*');
+    nmea_log_markup_span_t spans[4];
+    size_t span_count = 0u;
 
-    if (prefix != '\0') pre[0] = prefix;
-    strncpy(talk, body, 5);
-
-    if (p_fields) {
-        const char *fields_start = p_fields + 1;
-        if (p_crc && p_crc > fields_start) {
-            fields_len = (size_t)(p_crc - fields_start);
-        } else {
-            fields_len = strlen(fields_start);
-        }
-        if (fields_len >= sizeof(fields)) fields_len = sizeof(fields) - 1;
-        memcpy(fields, fields_start, fields_len);
-        fields[fields_len] = '\0';
+    if (prefix != '\0') {
+        spans[span_count++] = (nmea_log_markup_span_t) {
+            .text = plain, .length = 1u, .color = log_pfx_hex_()
+        };
+    }
+    spans[span_count++] = (nmea_log_markup_span_t) {
+        .text = body, .length = 5u, .color = log_talker_hex_()
+    };
+    spans[span_count++] = (nmea_log_markup_span_t) {
+        .text = fields,
+        .length = crc ? (size_t)(crc - fields) : strlen(fields),
+        .color = log_field_hex_()
+    };
+    if (crc) {
+        spans[span_count++] = (nmea_log_markup_span_t) {
+            .text = crc, .length = strlen(crc), .color = log_crc_hex_()
+        };
     }
 
-    if (p_crc && strlen(p_crc) >= 3) {
-        strncpy(crc, p_crc, 3);
+    if (!nmea_log_markup_format(line, sizeof(line), spans, span_count,
+                                wrap_width_px, 0, glyph_width_,
+                                (void *)&lv_font_montserrat_16)) {
+        ESP_LOGW("nmea_log", "Colored NMEA line too long; using plain text");
+        buf_push_plain_(plain);
+        return;
     }
-
-    /* Recolor commands are concatenated without visible separators.
-     * Keep the leading field comma and checksum delimiter inside their
-     * colored spans so rendered text remains byte-for-byte identical. */
-    if (pre[0] != '\0') {
-        snprintf(line, sizeof(line),
-            "#%s %s##%s %s##%s ,%s##%s %s#",
-            c_pfx, pre,
-            c_talker, talk,
-            c_field, fields,
-            c_crc, crc);
-    } else {
-        snprintf(line, sizeof(line),
-            "#%s %s##%s ,%s##%s %s#",
-            c_talker, talk,
-            c_field, fields,
-            c_crc, crc);
-    }
-
     buf_push(line);
 }
 
@@ -368,6 +338,7 @@ void nmea_log_init(lv_obj_t *parent, int x, int y, int w, int h)
     label = lv_label_create(page);
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(label, w - 16);
+    wrap_width_px = (uint16_t)((w > 24) ? (w - 24) : w);
     lv_label_set_recolor(label, true);
     lv_obj_set_style_text_color(label, lv_color_hex(log_text_hex_()), 0);
     lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
@@ -398,17 +369,20 @@ void nmea_log_add(const char *s)
     const char *body = NULL;
     char prefix = '\0';
     char plain[COLS];
+    size_t plain_len;
 
     if (!label || !page || !buffers_ready_()) return;
     if (!s || !*s) return;
 
-    if (is_nmea_like_(s, &body, &prefix)) {
-        add_colored_nmea_(body, prefix);
+    plain_len = sanitize_copy_(plain, sizeof(plain), s);
+    if (plain_len == 0u) return;
+
+    if (is_nmea_like_(plain, &body, &prefix)) {
+        add_colored_nmea_(plain, body, prefix);
         return;
     }
 
-    if (sanitize_copy_(plain, sizeof(plain), s) == 0) return;
-    buf_push(plain);
+    buf_push_plain_(plain);
 }
 
 void nmea_log_add_plain(const char *text)
@@ -422,7 +396,7 @@ void nmea_log_add_plain(const char *text)
     len = sanitize_copy_(line, sizeof(line), text);
     if (len == 0) return;
 
-    buf_push(line);
+    buf_push_plain_(line);
 }
 
 void nmea_log_add_hex_line(const char *text)
@@ -432,8 +406,8 @@ void nmea_log_add_hex_line(const char *text)
     const char *address_end;
     const char *ascii_start;
     size_t address_len;
-    size_t colored_len = 0;
     size_t plain_len;
+    nmea_log_markup_span_t spans[3];
 
     if (!label || !page || !buffers_ready_()) return;
     if (!text || !*text) return;
@@ -459,15 +433,23 @@ void nmea_log_add_hex_line(const char *text)
         return;
     }
 
-    if (!append_raw_recolor_span_(colored, sizeof(colored), &colored_len,
-                                  UI_NMEA_HEX_ADDRESS_HEX, plain, address_len) ||
-        !append_raw_recolor_span_(colored, sizeof(colored), &colored_len,
-                                  UI_NMEA_HEX_DATA_HEX,
-                                  plain + address_len,
-                                  (size_t)(ascii_start - (plain + address_len))) ||
-        !append_raw_recolor_span_(colored, sizeof(colored), &colored_len,
-                                  UI_NMEA_HEX_ASCII_HEX, ascii_start,
-                                  plain_len - (size_t)(ascii_start - plain))) {
+    spans[0] = (nmea_log_markup_span_t) {
+        .text = plain, .length = address_len, .color = UI_NMEA_HEX_ADDRESS_HEX
+    };
+    spans[1] = (nmea_log_markup_span_t) {
+        .text = plain + address_len,
+        .length = (size_t)(ascii_start - (plain + address_len)),
+        .color = UI_NMEA_HEX_DATA_HEX
+    };
+    spans[2] = (nmea_log_markup_span_t) {
+        .text = ascii_start,
+        .length = plain_len - (size_t)(ascii_start - plain),
+        .color = UI_NMEA_HEX_ASCII_HEX
+    };
+
+    if (!nmea_log_markup_format(colored, sizeof(colored), spans, 3u,
+                                wrap_width_px, -2, glyph_width_,
+                                (void *)&lv_font_nmea_unscii_16)) {
         buf_push(plain);
         return;
     }
@@ -510,4 +492,14 @@ void nmea_log_set_raw_mode(bool enabled)
                          ? UI_NMEA_HEX_DATA_HEX
                          : log_text_hex_()),
         LV_PART_MAIN);
+}
+
+void nmea_log_view_suspend(bool suspended)
+{
+    if (!update_timer) return;
+    if (suspended) lv_timer_pause(update_timer);
+    else {
+        lv_timer_resume(update_timer);
+        update_log_cb(update_timer);
+    }
 }

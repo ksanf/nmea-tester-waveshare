@@ -19,6 +19,9 @@
 extern "C" {
 #endif
 
+/* Presentation only; call under the LVGL lock. Valid pending numeric input
+ * is applied, invalid drafts roll back. The tab is rebuilt from templates. */
+void nmea_editor_suspend(bool suspended);
 void nmea_editor_create(void);   /* Create or show the editor screen. */
 
 #ifdef __cplusplus

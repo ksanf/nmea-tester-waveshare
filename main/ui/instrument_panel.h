@@ -43,13 +43,13 @@ lv_obj_t *instrument_panel_init(lv_obj_t *parent,
                                 int x, int y,
                                 int w, int h);
 
-/** Process a NUL-terminated NMEA sentence. */
+/** Thread-safe model adapter; does not require a panel or the LVGL lock. */
 void instrument_panel_process(const char *line);
 
 /** Force a UI refresh after direct data changes. */
 void instrument_panel_update(const nmea_data_t *ext_data);
 
-/** Flush accumulated data to all 12 labels. */
+/** Render a model snapshot; call on the LVGL task or with its lock held. */
 void instrument_panel_flush(void);
 
 void refresh_template(void);

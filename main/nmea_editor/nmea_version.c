@@ -6,6 +6,7 @@
  */
 
 #include "nmea_editor/nmea_version.h"
+#include <stdatomic.h>
 
 static const nmea_version_profile_t s_profiles[NMEA_VERSION_COUNT] = {
     [NMEA_VERSION_2_1] = {
@@ -46,7 +47,7 @@ static const nmea_version_profile_t s_profiles[NMEA_VERSION_COUNT] = {
 };
 
 /* Keep existing installations output-compatible with the old formatter. */
-static nmea_version_t s_version = NMEA_VERSION_2_3;
+static _Atomic(nmea_version_t) s_version = NMEA_VERSION_2_3;
 
 static bool version_valid_(nmea_version_t version)
 {

@@ -6,23 +6,21 @@
  */
 
 #include "protocol_handler.h"
+#include "protocol_poll_worker.h"
 #include "bridge_can_config.h"
 #include "can_driver.h"
 
 /* Stack and upper layers */
 #include "sailor_proto_common.h"
-#include "l5_terminal.h"        /* Terminal tunnel (L7 over L3L4) */
-#include "l5_service.h"
-#include "fsm.h"                /* FSM owns the L2, L3L4, and TLV layers */
-#include "fsm_actions.h"        /* TX primitives for the FSM */
+#include "fsm.h"                /* TT6006 profile owns L2, FP and NDP clients */
 
 /* Types used by bind_layers configuration; no protocol logic lives here. */
 #include "l2_link.h"            /* sp_l2_config_t */
 #include "l3l4_transport.h"     /* sp_timing_t */
-#include "tlv_codec.h"          /* sp_tlv_config_t */
 
 #include "serial_comm.h"
 #include "buffer_manager.h"
+#include "can_byte_ring.h"
 #include "config_nmea_tester.h"
 #include "system/telnet_router.h"
 #include "system/telnet_server.h"
@@ -34,6 +32,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -43,7 +42,6 @@
 #define TAG "PROTO"
 
 /* ===== Periods and timers ===== */
-#define FSM_POLL_PERIOD_US    (20 * 1000)   /* 20 ms */
 #define TERM_RX_TICK_MS       20            /* 50 Hz */
 #define TERM_RX_MAX_PER_TICK  64
 #define TERM_RX_PENDING_MAX   192
@@ -57,12 +55,6 @@
 #define HANDLER_TASK_STOP_WAIT_MS 2500u
 #define HANDLER_TASK_STOP_POLL_MS   10u
 
-static inline uint8_t term_input_series_next_(uint8_t cur)
-{
-    if (cur < 0x08u || cur > 0x0Fu) return 0x08u;
-    return (cur == 0x0Fu) ? 0x08u : (uint8_t)(cur + 1u);
-}
-
 static bool term_rx_has_line_end_(const uint8_t *buf, size_t len)
 {
     if (!buf || len == 0) return false;
@@ -73,20 +65,60 @@ static bool term_rx_has_line_end_(const uint8_t *buf, size_t len)
 }
 
 /* ===== UI and state ===== */
-static protocol_log_cb_t   g_log_cb   = NULL;
-static protocol_state_cb_t g_state_cb = NULL;
+static _Atomic(protocol_log_cb_t) g_log_cb = NULL;
+static _Atomic(protocol_state_cb_t) g_state_cb = NULL;
 static void               *g_ui_user  = NULL;
-static volatile protocol_link_state_t g_state = PROTO_STATE_BOOT;
+static _Atomic(protocol_link_state_t) g_state = PROTO_STATE_BOOT;
+static portMUX_TYPE g_ui_lock = portMUX_INITIALIZER_UNLOCKED;
+static atomic_uint g_ui_inflight = ATOMIC_VAR_INIT(0);
 
 /* ===== Configuration and resources ===== */
 static protocol_handler_cfg_t g_cfg;
+static atomic_uint g_rs_baudrate;
 static _Atomic(TaskHandle_t)  g_task_term_rx = NULL;
 static _Atomic(TaskHandle_t)  g_task_pipe    = NULL;
 static atomic_bool            g_tasks_stop = ATOMIC_VAR_INIT(false);
-static esp_timer_handle_t     g_fsm_timer    = NULL;
-static volatile bool          g_term_ready_seen = false;
-static volatile protocol_term_io_t g_term_owner = PROTOCOL_TERM_IO_UART;
-static volatile bool          g_handler_ready = false;
+static atomic_bool g_term_ready_seen = ATOMIC_VAR_INIT(false);
+static _Atomic(protocol_term_io_t) g_term_owner = PROTOCOL_TERM_IO_UART;
+static atomic_bool g_handler_ready = ATOMIC_VAR_INIT(false);
+static atomic_bool g_can_owned = ATOMIC_VAR_INIT(false);
+static atomic_bool g_serial_owned = ATOMIC_VAR_INIT(false);
+static atomic_uint g_io_generation = ATOMIC_VAR_INIT(0);
+/* Kept for process lifetime: browser writes/drains never race a freed mutex/ring. */
+static _Atomic(SemaphoreHandle_t) g_io_mutex;
+static portMUX_TYPE g_web_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t g_web_input[PROTOCOL_WEB_INPUT_CAPACITY];
+static can_byte_ring_t g_web_input_ring = CAN_BYTE_RING_INIT(g_web_input);
+static uint8_t g_web_output[PROTOCOL_WEB_OUTPUT_CAPACITY];
+static can_byte_ring_t g_web_output_ring = CAN_BYTE_RING_INIT(g_web_output);
+
+static bool io_lock_(void)
+{
+    return g_io_mutex && xSemaphoreTake(g_io_mutex, portMAX_DELAY) == pdTRUE;
+}
+
+static void web_rings_clear_(void)
+{
+    portENTER_CRITICAL(&g_web_lock);
+    can_byte_ring_clear(&g_web_input_ring);
+    can_byte_ring_clear(&g_web_output_ring);
+    portEXIT_CRITICAL(&g_web_lock);
+}
+
+static void web_output_push_(const uint8_t *data, size_t len)
+{
+    portENTER_CRITICAL(&g_web_lock);
+    can_byte_ring_append(&g_web_output_ring, data, len);
+    portEXIT_CRITICAL(&g_web_lock);
+}
+
+static size_t web_input_take_(uint8_t *out, size_t cap)
+{
+    portENTER_CRITICAL(&g_web_lock);
+    size_t n = can_byte_ring_read(&g_web_input_ring, out, cap);
+    portEXIT_CRITICAL(&g_web_lock);
+    return n;
+}
 static uint8_t                g_wifi_recent_tx[TERM_RX_PENDING_MAX];
 static size_t                 g_wifi_recent_tx_len = 0;
 static uint32_t               g_wifi_recent_tx_ms = 0;
@@ -146,41 +178,33 @@ static void wifi_rx_queue_drain_(void)
 
 static void wifi_recent_tx_record_(const uint8_t *data, size_t len)
 {
-    if (!data || len == 0) {
+    portENTER_CRITICAL(&g_web_lock);
+    if (!data || !len) {
         g_wifi_recent_tx_len = 0;
         g_wifi_recent_tx_ms = 0;
-        return;
+    } else {
+        if (len > sizeof(g_wifi_recent_tx)) len = sizeof(g_wifi_recent_tx);
+        memcpy(g_wifi_recent_tx, data, len);
+        g_wifi_recent_tx_len = len;
+        g_wifi_recent_tx_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
     }
-    if (len > sizeof(g_wifi_recent_tx)) len = sizeof(g_wifi_recent_tx);
-    memcpy(g_wifi_recent_tx, data, len);
-    g_wifi_recent_tx_len = len;
-    g_wifi_recent_tx_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    portEXIT_CRITICAL(&g_web_lock);
 }
 
 static bool wifi_recent_tx_matches_echo_(const uint8_t *data, uint16_t len)
 {
-    uint32_t now_ms;
-
-    if (!data || len == 0 || g_wifi_recent_tx_len == 0) return false;
-    if (len > g_wifi_recent_tx_len) return false;
-
-    now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-    if ((now_ms - g_wifi_recent_tx_ms) > 2000u) return false;
-
+    if (!data || !len) return false;
     for (uint16_t i = 0; i < len; ++i) {
         uint8_t c = data[i];
-        if (!(c == '\r' || c == '\n' || c == '\t' || (c >= 32 && c < 127))) {
-            return false;
-        }
+        if (!(c == '\r' || c == '\n' || c == '\t' || (c >= 32 && c < 127))) return false;
     }
-
-    if (memcmp(data, g_wifi_recent_tx + (g_wifi_recent_tx_len - len), len) == 0) {
-        return true;
-    }
-    if (memcmp(data, g_wifi_recent_tx, len) == 0) {
-        return true;
-    }
-    return false;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    portENTER_CRITICAL(&g_web_lock);
+    bool match = g_wifi_recent_tx_len >= len && (now - g_wifi_recent_tx_ms) <= 2000u &&
+        (memcmp(data, g_wifi_recent_tx + (g_wifi_recent_tx_len - len), len) == 0 ||
+         memcmp(data, g_wifi_recent_tx, len) == 0);
+    portEXIT_CRITICAL(&g_web_lock);
+    return match;
 }
 
 /* ===== Log helpers (for L7/PIPE previews) ===== */
@@ -233,10 +257,14 @@ static inline void ui_log_can_chunk_(const char *dir, const uint8_t *data, uint1
     ui_log(true, line);
 }
 
-static void pipe_emit_to_uart_(const uint8_t *data, uint16_t len)
+static void pipe_emit_locked_(const uint8_t *data, uint16_t len)
 {
     if (!data || !len) return;
 
+    if (g_term_owner == PROTOCOL_TERM_IO_WEB) {
+        web_output_push_(data, len);
+        return;
+    }
     if (g_term_owner == PROTOCOL_TERM_IO_WIFI) {
         esp_err_t err = telnet_server_send(data, len);
         if (err != ESP_OK) {
@@ -282,6 +310,13 @@ static void pipe_emit_to_uart_(const uint8_t *data, uint16_t len)
     if (g_log_cb) {
         ui_log_pc_chunk_("RX", data, len);
     }
+}
+
+static void pipe_emit_to_uart_(const uint8_t *data, uint16_t len)
+{
+    if (!io_lock_()) return;
+    if (g_handler_ready) pipe_emit_locked_(data, len);
+    xSemaphoreGive(g_io_mutex);
 }
 
 #if BRIDGE_CAN_LOG_L3
@@ -331,16 +366,34 @@ static const char* proto_state_str(protocol_link_state_t s) {
 }
 #endif
 static inline void ui_log(bool to_can, const char *s) {
-    if (g_log_cb && s) g_log_cb(to_can, s, g_ui_user);
+    if (!s) return;
+    portENTER_CRITICAL(&g_ui_lock);
+    protocol_log_cb_t cb = g_log_cb;
+    void *user = g_ui_user;
+    if (cb) atomic_fetch_add(&g_ui_inflight, 1u);
+    portEXIT_CRITICAL(&g_ui_lock);
+    if (cb) { cb(to_can, s, user); atomic_fetch_sub(&g_ui_inflight, 1u); }
 }
 static inline void ui_state(protocol_link_state_t st) {
-    if (g_state_cb) g_state_cb(st, g_ui_user);
+    portENTER_CRITICAL(&g_ui_lock);
+    protocol_state_cb_t cb = g_state_cb;
+    void *user = g_ui_user;
+    if (cb) atomic_fetch_add(&g_ui_inflight, 1u);
+    portEXIT_CRITICAL(&g_ui_lock);
+    if (cb) { cb(st, user); atomic_fetch_sub(&g_ui_inflight, 1u); }
 }
 static inline void set_state(protocol_link_state_t st) {
     if (g_state != st) {
         HLOGI(TAG, "STATE: %s -> %s", proto_state_str(g_state), proto_state_str(st));
         g_state = st;
-        if (st != PROTO_STATE_ONLINE) g_term_ready_seen = false;
+        g_term_ready_seen = (st == PROTO_STATE_ONLINE);
+        if (st != PROTO_STATE_ONLINE) {
+            atomic_fetch_add(&g_io_generation, 1u);
+            portENTER_CRITICAL(&g_web_lock);
+            can_byte_ring_clear(&g_web_input_ring);
+            portEXIT_CRITICAL(&g_web_lock);
+            wifi_rx_queue_drain_();
+        }
         ui_state(st);
     }
 }
@@ -360,16 +413,17 @@ static bool bringup_can_(uint32_t bitrate) {
 }
 
 /* ======================================================================================
- * L5 TERMINAL: RX callback (CAN -> queue -> PIPE -> UART). No protocol logic.
+ * NDP TERMINAL: RX callback (CAN -> queue -> PIPE -> UART), with no protocol logic.
  * ====================================================================================*/
-static void term_on_l5_rx_(const uint8_t *data, uint16_t len, bool is_echo, void *user)
+static bool term_on_ndp_rx_(const uint8_t *data, uint16_t len, void *user)
 {
     (void)user;
-    if (!data || !len) return;
+    if (!data || !len || !g_handler_ready) return false;
+    const bool is_echo = wifi_recent_tx_matches_echo_(data, len);
     if (!is_echo) g_term_ready_seen = true;
-    if (g_term_owner == PROTOCOL_TERM_IO_WIFI &&
-        (is_echo || wifi_recent_tx_matches_echo_(data, len))) {
-        return;
+    if (g_term_owner != PROTOCOL_TERM_IO_UART &&
+        is_echo) {
+        return true;
     }
 
 #if BRIDGE_CAN_LOG_L7
@@ -383,18 +437,23 @@ static void term_on_l5_rx_(const uint8_t *data, uint16_t len, bool is_echo, void
     if (g_log_cb) ui_log_can_chunk_(is_echo ? "RXE" : "RX", data, len);
 
     uint8_t *cp = (uint8_t*)pvPortMalloc(len);
-    if (!cp) { HLOGE(TAG, "No mem for term evt (%u)", (unsigned)len); return; }
+    if (!cp) {
+        HLOGE(TAG, "No mem for term evt (%u)", (unsigned)len);
+        return false;
+    }
     memcpy(cp, data, len);
     term_evt_t evt = { .p = cp, .len = len, .is_echo = is_echo };
     if (!g_q_term_evt || xQueueSend(g_q_term_evt, &evt, pdMS_TO_TICKS(TERM_EVT_ENQ_WAIT_MS)) != pdTRUE) {
         vPortFree(cp);
-        HLOGW(TAG, "term evt queue full (drop %u)", (unsigned)len);
-        PCMTLOGW(TAG, "PCMT CAN->PIPE enqueue DROP len=%u echo=%u q=%u",
+        HLOGW(TAG, "term evt queue full (retry %u)", (unsigned)len);
+        PCMTLOGW(TAG, "PCMT CAN->PIPE backpressure len=%u echo=%u q=%u",
                  (unsigned)len, (unsigned)is_echo, (unsigned)term_evt_q_depth_());
+        return false;
     } else {
         PCMTLOGI(TAG, "PCMT CAN->PIPE enqueue len=%u echo=%u q=%u",
                  (unsigned)len, (unsigned)is_echo, (unsigned)term_evt_q_depth_());
     }
+    return true;
 }
 
 /* ======================================================================================
@@ -451,24 +510,22 @@ static void pipe_task(void *arg)
 static void term_wifi_rx_cb_(const uint8_t *data, size_t len, void *user)
 {
     (void)user;
-    if (!data || len == 0 || !g_q_wifi_rx) return;
-
-    uint8_t *cp = (uint8_t *)pvPortMalloc(len);
-    if (!cp) return;
-    memcpy(cp, data, len);
-
-    term_evt_t evt = {
-        .p = cp,
-        .len = (uint16_t)len,
-        .is_echo = false,
-    };
-    if (xQueueSend(g_q_wifi_rx, &evt, 0) != pdTRUE) {
-        vPortFree(cp);
+    if (!data || !len || len > TERM_RX_PENDING_MAX || !io_lock_()) return;
+    if (!g_handler_ready || g_state != PROTO_STATE_ONLINE || g_term_owner != PROTOCOL_TERM_IO_WIFI || !g_q_wifi_rx) {
+        xSemaphoreGive(g_io_mutex);
+        return;
     }
+    uint8_t *cp = (uint8_t *)pvPortMalloc(len);
+    if (cp) {
+        memcpy(cp, data, len);
+        term_evt_t evt = { .p = cp, .len = (uint16_t)len, .is_echo = false };
+        if (xQueueSend(g_q_wifi_rx, &evt, 0) != pdTRUE) vPortFree(cp);
+    }
+    xSemaphoreGive(g_io_mutex);
 }
 
 /* ======================================================================================
- * UART to CAN: read UART at 50 Hz and send blocks through L5.Terminal (FSM handles addressing)
+ * UART to CAN: read UART at 50 Hz and send blocks through the NDP terminal session (FSM handles addressing)
  * ====================================================================================*/
 static void term_rx_task(void *arg)
 {
@@ -476,16 +533,21 @@ static void term_rx_task(void *arg)
     HLOGI(TAG, "TERM RX task start (50 Hz)");
 
     TickType_t last_wake = xTaskGetTickCount();
-    static uint8_t seq = 0x08u;
     uint8_t pending[TERM_RX_PENDING_MAX];
     size_t  pending_len = 0;
     uint32_t pending_last_rx_ms = 0;
     uint32_t wait_credit_log_ms = 0;
+    uint32_t io_generation = atomic_load(&g_io_generation);
 
     while (!tasks_stop_requested_()) {
+        uint32_t current_generation = atomic_load(&g_io_generation);
+        if (current_generation != io_generation) {
+            pending_len = 0;
+            pending_last_rx_ms = 0;
+            io_generation = current_generation;
+        }
         if (sp_fsm_get_state() != SP_ST_ONLINE || !g_term_ready_seen) {
-            /* A new or renewed tunnel session starts with the compatible series value. */
-            seq = 0x08u;
+            /* A closed transport epoch cannot retain unsubmitted input. */
             pending_len = 0;
             pending_last_rx_ms = 0;
             (void)serial_comm_flush_input();
@@ -494,7 +556,19 @@ static void term_rx_task(void *arg)
         }
 
         uint8_t buf[TERM_RX_MAX_PER_TICK];
-        if (g_term_owner == PROTOCOL_TERM_IO_WIFI) {
+        if (g_term_owner == PROTOCOL_TERM_IO_WEB) {
+            size_t n = 0;
+            if (io_lock_()) {
+                if (io_generation == atomic_load(&g_io_generation)) {
+                    n = web_input_take_(&pending[pending_len], sizeof(pending) - pending_len);
+                }
+                xSemaphoreGive(g_io_mutex);
+            }
+            if (n) {
+                pending_len += n;
+                pending_last_rx_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+            }
+        } else if (g_term_owner == PROTOCOL_TERM_IO_WIFI) {
             term_evt_t evt;
             while (pending_len < sizeof(pending) &&
                    g_q_wifi_rx &&
@@ -560,7 +634,7 @@ static void term_rx_task(void *arg)
         if (pending_len > 0 && sp_fsm_term_input_can_send()) {
             bool flush_now = true;
 
-            if (g_term_owner == PROTOCOL_TERM_IO_WIFI) {
+            if (g_term_owner != PROTOCOL_TERM_IO_UART) {
                 const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
                 const bool have_eol = term_rx_has_line_end_(pending, pending_len);
                 const bool idle_flush = pending_last_rx_ms != 0 &&
@@ -582,23 +656,30 @@ static void term_rx_task(void *arg)
             char ascii[96] = {0}, hex[3 * 64 + 4] = {0};
             ascii_preview(pending, tx_len, ascii, sizeof(ascii));
             hex_dump_line(pending, tx_len > 64 ? 64 : tx_len, hex, sizeof(hex));
-            L7LOGI(TAG, "L7 TERM RX block: series=0x%02X len=%u | \"%s\"%s | %s%s",
-                   (unsigned)seq, (unsigned)tx_len, ascii, (tx_len > 80 ? "..." : ""),
+            L7LOGI(TAG, "L7 TERM RX block: len=%u | \"%s\"%s | %s%s",
+                   (unsigned)tx_len, ascii, (tx_len > 80 ? "..." : ""),
                    hex, (tx_len > 64 ? " ..." : ""));
 #endif
-            PCMTLOGI(TAG, "PCMT PC->CAN send series=0x%02X len=%u pending=%u",
-                     (unsigned)seq, (unsigned)tx_len, (unsigned)pending_len);
-            sp_err_t se = sp_term_send(pending, (uint16_t)tx_len, seq);
+            PCMTLOGI(TAG, "PCMT PC->CAN enqueue len=%u pending=%u",
+                     (unsigned)tx_len, (unsigned)pending_len);
+            /* Revoke waits for an already started write, while unstarted bytes
+             * from the previous browser/Telnet owner are discarded. */
+            if (!io_lock_()) continue;
+            if (!g_handler_ready || io_generation != atomic_load(&g_io_generation)) {
+                pending_len = 0;
+                pending_last_rx_ms = 0;
+                xSemaphoreGive(g_io_mutex);
+                continue;
+            }
+            sp_err_t se = sp_fsm_term_send(pending, (uint16_t)tx_len);
             if (se != SP_OK) {
                 HLOGW(TAG, "term_send(len=%u) failed: %d", (unsigned)tx_len, (int)se);
-                PCMTLOGW(TAG, "PCMT PC->CAN send FAIL series=0x%02X len=%u err=%d pending=%u",
-                         (unsigned)seq, (unsigned)tx_len, (int)se, (unsigned)pending_len);
+                PCMTLOGW(TAG, "PCMT PC->CAN enqueue FAIL len=%u err=%d pending=%u",
+                         (unsigned)tx_len, (int)se, (unsigned)pending_len);
             } else {
-                if (g_term_owner == PROTOCOL_TERM_IO_WIFI) {
+                if (g_term_owner != PROTOCOL_TERM_IO_UART) {
                     wifi_recent_tx_record_(pending, tx_len);
                 }
-                seq = term_input_series_next_(seq);
-                sp_fsm_term_input_mark_sent();
                 if (g_log_cb) {
                     ui_log_can_chunk_("TX", pending, (uint16_t)tx_len);
                     ui_log_pc_chunk_("TX", pending, (uint16_t)tx_len);
@@ -609,9 +690,10 @@ static void term_rx_task(void *arg)
                 } else {
                     pending_last_rx_ms = 0;
                 }
-                PCMTLOGI(TAG, "PCMT PC->CAN send OK next_series=0x%02X pending=%u",
-                         (unsigned)seq, (unsigned)pending_len);
+                PCMTLOGI(TAG, "PCMT PC->CAN queued pending=%u",
+                         (unsigned)pending_len);
             }
+            xSemaphoreGive(g_io_mutex);
         } else if (pending_len > 0) {
             const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
             if ((now_ms - wait_credit_log_ms) >= 500u) {
@@ -627,13 +709,11 @@ static void term_rx_task(void *arg)
 }
 
 /* ======================================================================================
- * FSM TIMER (polls the FSM; state logic is implemented in fsm.c)
+ * FSM worker callback (blocking protocol work runs outside ESP_TIMER_TASK)
  * ====================================================================================*/
-static void fsm_poll_timer(void *arg)
+static void fsm_poll(void)
 {
-    (void)arg;
-
-    sp_fsm_tick((uint32_t)(esp_timer_get_time() / 1000)); /* now_ms */
+    sp_fsm_tick();
 
     sp_state_t st = sp_fsm_get_state();
     protocol_link_state_t ps =
@@ -658,13 +738,27 @@ static void fsm_poll_timer(void *arg)
  * ====================================================================================*/
 void protocol_handler_set_ui(protocol_log_cb_t log_cb, protocol_state_cb_t state_cb, void *user)
 {
-    g_log_cb = log_cb; g_state_cb = state_cb; g_ui_user = user;
+    portENTER_CRITICAL(&g_ui_lock);
+    g_log_cb = NULL; g_state_cb = NULL;
+    portEXIT_CRITICAL(&g_ui_lock);
+    /* Join callbacks that already copied the old user pointer before replacing it. */
+    while (atomic_load(&g_ui_inflight)) vTaskDelay(pdMS_TO_TICKS(1));
+    portENTER_CRITICAL(&g_ui_lock);
+    g_ui_user = user; g_log_cb = log_cb; g_state_cb = state_cb;
+    portEXIT_CRITICAL(&g_ui_lock);
 }
 
 bool protocol_handler_init(const protocol_handler_cfg_t *cfg)
 {
-    if (!cfg) { HLOGE(TAG, "Invalid config"); return false; }
+    if (!cfg || g_can_owned || g_serial_owned) return false;
+    if (!g_io_mutex) {
+        g_io_mutex = xSemaphoreCreateMutex();
+        if (!g_io_mutex) return false;
+    }
     g_cfg = *cfg;
+    g_rs_baudrate = cfg->rs_baudrate;
+    web_rings_clear_();
+    atomic_fetch_add(&g_io_generation, 1u);
 
     if (!buffer_manager_init()) {
         HLOGE(TAG, "Buffer manager init failed");
@@ -673,63 +767,34 @@ bool protocol_handler_init(const protocol_handler_cfg_t *cfg)
 
     HLOGI(TAG, "SERIAL init: baud=%u", g_cfg.rs_baudrate);
     if (serial_comm_init(g_cfg.rs_baudrate) != ESP_OK) {
-        HLOGE(TAG, "Serial init failed"); return false;
+        HLOGE(TAG, "Serial init failed"); buffer_manager_deinit(); return false;
     }
+
+    g_serial_owned = true;
 
     /* === CAN up === */
     if (!bringup_can_(g_cfg.can_bitrate)) {
-        serial_comm_deinit();
+        if (serial_comm_deinit() == ESP_OK) g_serial_owned = false;
+        buffer_manager_deinit();
         return false;
     }
+    g_can_owned = true;
 
-    /* === L5.Terminal (RX callback into the pipe) === */
+    /* TT6006 service profile owns discovery and both NDP client sessions. */
     {
-        sp_term_config_t tcfg = (sp_term_config_t){0};
-        if (sp_term_init(&tcfg, term_on_l5_rx_, NULL) != SP_OK) {
-            HLOGE(TAG, "L5.Terminal init failed"); goto fail_can;
+        /* Address claim and service discovery are owned by this profile. */
+        sp_fsm_config_t fcfg = { .local_sa = 0x00 };
+        if (sp_fsm_init(&fcfg) != SP_OK) {
+            HLOGE(TAG, "TT6006 profile init failed"); goto fail_can;
         }
-        (void)sp_service_init(/*on_rx*/NULL, NULL);
-    }
+        sp_fsm_set_term_rx(term_on_ndp_rx_, NULL);
 
-    /* === FSM and actions (all protocol logic is encapsulated by the FSM) === */
-    {
-        if (sp_actions_init() != SP_OK) {
-            HLOGE(TAG, "sp_actions_init failed");
-            goto fail_l5;
-        }
-
-        /* The FSM initializes and owns L2, L3L4, and TLV. */
-        sp_fsm_config_t fcfg = {
-            .local_sa = 0x00,
-            .peer_sa  = 0xFF,
-            .timing = {
-                .addr_claim_interval_ms = 1000,
-                .announce_period_ms     = 3000,
-                .poll_timeout_ms        = 3000
-            }
-        };
-        sp_fsm_actions_t fact = {
-            .send_bcast_ef_small   = sp_action_send_bcast_ef_small,
-            .send_bcast_ea_pointer = sp_action_send_bcast_ea_pointer,
-            .send_bcast_ee_status  = sp_action_send_bcast_ee_status,
-            .send_dialog_req       = sp_action_send_dialog_req
-        };
-        if (sp_fsm_init(&fcfg, &fact) != SP_OK) {
-            HLOGE(TAG, "FSM init failed"); goto fail_l5;
-        }
-
-        /* The FSM binds the layers through the new sp_fsm_bind_layers() prototype:
-           - L2 configuration: no hardware filters
-           - L3L4 block timeout: from bridge_can_config.h
-           - slots: 8
-           - TLV: 50 ms deduplication, cycle detector enabled
-           - this handler does not need L2/L3L4 events, so callbacks are NULL */
+        /* Unfiltered CAN RX, bounded FP assembly and serialized NDP delivery. */
         sp_l2_config_t  l2cfg = { .use_hw_filters = false };
-        sp_timing_t     trtim = { .fp_block_timeout_ms = BRIDGE_CAN_PKT_TIMEOUT_MS };
+        sp_timing_t     trtim = { .fp_block_timeout_ms = 850 };
         const uint16_t  tr_slots = BRIDGE_CAN_TR_MAX_SLOTS;
-        sp_tlv_config_t tlvc  = { .dedup_ms = 50, .detect_cycle = true };
 
-        if (sp_fsm_bind_layers(&l2cfg, &trtim, tr_slots, &tlvc,
+        if (sp_fsm_bind_layers(&l2cfg, &trtim, tr_slots,
                                /*on_l2_evt*/NULL, /*on_tr_evt*/tr_evt_log_cb_, /*user*/NULL) != SP_OK) {
             HLOGE(TAG, "FSM bind layers failed"); goto fail_fsm;
         }
@@ -741,20 +806,6 @@ bool protocol_handler_init(const protocol_handler_cfg_t *cfg)
     g_q_wifi_rx = xQueueCreate(32, sizeof(term_evt_t));
     if (!g_q_wifi_rx) { HLOGE(TAG, "wifi rx queue create failed"); goto fail_q_term; }
     telnet_router_register(TELNET_ROUTE_BRIDGE, term_wifi_rx_cb_, NULL);
-
-    /* FSM polling timer */
-    {
-        esp_timer_create_args_t targs = {
-            .callback = fsm_poll_timer,
-            .arg = NULL,
-            .dispatch_method = ESP_TIMER_TASK,
-            .name = "fsm_poll"
-        };
-        if (esp_timer_create(&targs, &g_fsm_timer) != ESP_OK ||
-            esp_timer_start_periodic(g_fsm_timer, FSM_POLL_PERIOD_US) != ESP_OK) {
-            HLOGE(TAG, "FSM timer init failed"); goto fail_q;
-        }
-    }
 
     set_state(PROTO_STATE_BOOT);
     wifi_recent_tx_record_(NULL, 0);
@@ -770,34 +821,18 @@ bool protocol_handler_init(const protocol_handler_cfg_t *cfg)
     HLOGI(TAG, "Init done: CAN=%u, RS=%u", g_cfg.can_bitrate, g_cfg.rs_baudrate);
     return true;
 
-/* ----- error path ----- */
-fail_q:
-    telnet_router_unregister(TELNET_ROUTE_BRIDGE);
-    if (g_q_wifi_rx) { vQueueDelete(g_q_wifi_rx); g_q_wifi_rx = NULL; }
+/* ----- error path: the regular stop joins producers before releasing memory ----- */
 fail_q_term:
-    vQueueDelete(g_q_term_evt); g_q_term_evt = NULL;
 fail_bind:
-    sp_fsm_unbind_layers();
 fail_fsm:
-    sp_fsm_deinit();
-fail_l5:
-    sp_term_deinit();
-    sp_service_deinit();
 fail_can:
-    g_handler_ready = false;
-    {
-        esp_err_t can_err = can_driver_deinit();
-        if (can_err != ESP_OK) {
-            HLOGE(TAG, "CAN cleanup failed: %s", esp_err_to_name(can_err));
-        }
-    }
-    serial_comm_deinit();
-    buffer_manager_deinit();
+    (void)protocol_handler_deinit();
     return false;
 }
 
 bool protocol_handler_start(void)
 {
+    if (!g_handler_ready) return false;
     BaseType_t rc;
     TaskHandle_t created_task = NULL;
 
@@ -813,7 +848,7 @@ bool protocol_handler_start(void)
         if (rc != pdPASS) {
             HLOGE(TAG, "Failed to create pipe task (stack=%u, prio=%u, core=%d)",
                   (unsigned)BRIDGE_CAN_STACK_PUMP, (unsigned)BRIDGE_CAN_PRIO_PUMP, BRIDGE_CAN_CORE_BG);
-            return false;
+            goto fail_started;
         }
         atomic_store_explicit(&g_task_pipe, created_task, memory_order_release);
     }
@@ -829,30 +864,47 @@ bool protocol_handler_start(void)
         if (rc != pdPASS) {
             HLOGE(TAG, "Failed to create term_rx task (stack=%u, prio=%u, core=%d)",
                   (unsigned)BRIDGE_CAN_STACK_TERMINAL, (unsigned)BRIDGE_CAN_PRIO_TERMINAL, BRIDGE_CAN_CORE_TERM);
-            atomic_store_explicit(&g_tasks_stop, true, memory_order_release);
-            (void)handler_wait_tasks_stopped_(HANDLER_TASK_STOP_WAIT_MS);
-            return false;
+            goto fail_started;
         }
         atomic_store_explicit(&g_task_term_rx, created_task, memory_order_release);
     }
 
+    if (!protocol_poll_worker_start(fsm_poll)) {
+        HLOGE(TAG, "Failed to create CAN FSM worker");
+        goto fail_started;
+    }
+
     HLOGI(TAG, "Started");
     return true;
+
+fail_started:
+    /* Also revoke readiness if a worker cannot be joined; a later start must
+     * never clear the stop flag and revive producers from a failed attempt. */
+    (void)protocol_handler_stop();
+    return false;
 }
 
 bool protocol_handler_stop(void)
 {
     g_handler_ready = false;
+    atomic_fetch_add(&g_io_generation, 1u);
     /* Drain a copied Wi-Fi callback before deleting its destination queue. */
     telnet_router_unregister(TELNET_ROUTE_BRIDGE);
     wifi_recent_tx_record_(NULL, 0);
     atomic_store_explicit(&g_tasks_stop, true, memory_order_release);
+    /* Request every producer to stop before waiting on any one of them. */
+    (void)protocol_poll_worker_stop(0);
     if (!handler_wait_tasks_stopped_(HANDLER_TASK_STOP_WAIT_MS)) {
         HLOGE(TAG, "Worker task stop timed out; runtime kept alive");
         return false;
     }
 
-    if (g_fsm_timer) { esp_timer_stop(g_fsm_timer); esp_timer_delete(g_fsm_timer); g_fsm_timer = NULL; }
+    if (!protocol_poll_worker_stop(HANDLER_TASK_STOP_WAIT_MS)) {
+        HLOGE(TAG, "CAN FSM worker stop timed out; runtime kept alive");
+        return false;
+    }
+    sp_fsm_deinit(); /* Close NDP while CAN is still available, then stop its RX producer. */
+    if (!sp_fsm_unbind_layers()) return false; /* join CAN RX before freeing its output queue */
 
     if (g_q_term_evt) {
         term_evt_queue_drain_();
@@ -864,19 +916,16 @@ bool protocol_handler_stop(void)
         vQueueDelete(g_q_wifi_rx);
         g_q_wifi_rx = NULL;
     }
-    /* The FSM owns the layers and strategy and disconnects them during unbind/deinit. */
-    sp_fsm_unbind_layers();
-    sp_fsm_deinit();
 
-    sp_term_deinit();
-    sp_service_deinit();
-
-    esp_err_t can_err = can_driver_deinit();
+    esp_err_t can_err = g_can_owned ? can_driver_deinit() : ESP_OK;
     if (can_err != ESP_OK) {
         HLOGE(TAG, "CAN stop failed: %s", esp_err_to_name(can_err));
         return false;
     }
 
+    g_can_owned = false;
+    web_rings_clear_();
+    set_state(PROTO_STATE_BOOT);
     atomic_store_explicit(&g_tasks_stop, false, memory_order_release);
     HLOGI(TAG, "Stopped");
     return true;
@@ -886,7 +935,10 @@ bool protocol_handler_deinit(void)
 {
     if (!protocol_handler_stop()) return false;
 
-    serial_comm_deinit();
+    if (g_serial_owned) {
+        if (serial_comm_deinit() != ESP_OK) return false;
+        g_serial_owned = false;
+    }
     buffer_manager_deinit();
     HLOGI(TAG, "Deinit");
     return true;
@@ -897,33 +949,39 @@ esp_err_t protocol_handler_set_rs_baudrate(uint32_t baud)
     esp_err_t err;
 
     if (baud == 0) return ESP_ERR_INVALID_ARG;
+    if (!io_lock_()) return ESP_ERR_INVALID_STATE;
+    if (!g_handler_ready || !g_serial_owned) { xSemaphoreGive(g_io_mutex); return ESP_ERR_INVALID_STATE; }
     err = serial_comm_set_baudrate(baud);
     if (err == ESP_OK) {
         g_cfg.rs_baudrate = baud;
+        g_rs_baudrate = baud;
         HLOGI(TAG, "SERIAL baud changed on-the-fly: %u", (unsigned)baud);
     } else {
         HLOGW(TAG, "SERIAL baud change failed: %s", esp_err_to_name(err));
     }
+    xSemaphoreGive(g_io_mutex);
     return err;
 }
 
 void protocol_handler_set_term_io_owner(protocol_term_io_t owner)
 {
-    g_term_owner = owner;
-    if (!g_handler_ready) {
-        HLOGI(TAG, "TERM I/O owner staged: %s",
-              owner == PROTOCOL_TERM_IO_WIFI ? "WIFI" : "UART");
-        return;
-    }
-    if (owner == PROTOCOL_TERM_IO_WIFI) {
-        (void)serial_comm_flush_input();
+    if (owner != PROTOCOL_TERM_IO_UART && owner != PROTOCOL_TERM_IO_WIFI && owner != PROTOCOL_TERM_IO_WEB) return;
+    bool locked = io_lock_();
+    if (g_term_owner != owner) {
+        g_term_owner = owner;
+        atomic_fetch_add(&g_io_generation, 1u);
+        sp_fsm_term_cancel_pending();
+        web_rings_clear_();
         wifi_recent_tx_record_(NULL, 0);
-        telnet_router_set_active(TELNET_ROUTE_BRIDGE);
-    } else if (g_q_wifi_rx) {
-        wifi_rx_queue_drain_();
-        telnet_router_set_active(TELNET_ROUTE_NONE);
+        if (g_handler_ready) {
+            (void)serial_comm_flush_input();
+            wifi_rx_queue_drain_();
+        }
     }
-    HLOGI(TAG, "TERM I/O owner: %s", owner == PROTOCOL_TERM_IO_WIFI ? "WIFI" : "UART");
+    if (g_handler_ready) {
+        telnet_router_set_active(owner == PROTOCOL_TERM_IO_WIFI ? TELNET_ROUTE_BRIDGE : TELNET_ROUTE_NONE);
+    }
+    if (locked) xSemaphoreGive(g_io_mutex);
 }
 
 protocol_term_io_t protocol_handler_get_term_io_owner(void)
@@ -933,26 +991,69 @@ protocol_term_io_t protocol_handler_get_term_io_owner(void)
 
 bool protocol_handler_is_term_ready(void)
 {
-    return (g_state == PROTO_STATE_ONLINE) && g_term_ready_seen;
+    return g_handler_ready && (g_state == PROTO_STATE_ONLINE) && g_term_ready_seen;
 }
 
-/* External byte-stream transmission uses L5.Terminal; the FSM handles addressing. */
+bool protocol_handler_is_running(void) { return g_can_owned || g_serial_owned; }
+bool protocol_handler_is_started(void)
+{
+    return g_handler_ready && atomic_load(&g_task_pipe) && atomic_load(&g_task_term_rx) &&
+        protocol_poll_worker_is_running();
+}
+protocol_link_state_t protocol_handler_get_state(void) { return g_state; }
+uint32_t protocol_handler_get_rs_baudrate(void)
+{
+    return g_rs_baudrate;
+}
+
+esp_err_t protocol_handler_web_write(const uint8_t *data, size_t len)
+{
+    if (!data || !len || len > sizeof(g_web_input)) return ESP_ERR_INVALID_ARG;
+    if (!io_lock_()) return ESP_ERR_INVALID_STATE;
+    portENTER_CRITICAL(&g_web_lock);
+    esp_err_t err = ESP_OK;
+    if (!g_handler_ready || g_term_owner != PROTOCOL_TERM_IO_WEB || !g_term_ready_seen || g_state != PROTO_STATE_ONLINE) {
+        err = ESP_ERR_INVALID_STATE;
+    } else if (!can_byte_ring_write(&g_web_input_ring, data, len)) {
+        err = ESP_ERR_NO_MEM;
+    }
+    portEXIT_CRITICAL(&g_web_lock);
+    xSemaphoreGive(g_io_mutex);
+    return err;
+}
+
+size_t protocol_handler_web_drain(uint8_t *out, size_t cap)
+{
+    if (!out || !cap) return 0;
+    portENTER_CRITICAL(&g_web_lock);
+    size_t n = can_byte_ring_read(&g_web_output_ring, out, cap);
+    portEXIT_CRITICAL(&g_web_lock);
+    return n;
+}
+
+void protocol_handler_web_stats(size_t *pending, uint32_t *dropped)
+{
+    portENTER_CRITICAL(&g_web_lock);
+    if (pending) *pending = g_web_output_ring.count;
+    if (dropped) *dropped = g_web_output_ring.dropped;
+    portEXIT_CRITICAL(&g_web_lock);
+}
+
+/* External terminal input uses the same reliable NDP queue as UART/web. */
 bool protocol_handler_send_ascii(const uint8_t *data, size_t len)
 {
     if (!data || !len) { HLOGW(TAG, "Invalid data or len"); return false; }
 
-    static uint8_t seq = 0x08u;
 
     size_t off = 0;
     while (off < len) {
         const size_t chunk = (len - off > TERM_RX_MAX_PER_TICK) ? TERM_RX_MAX_PER_TICK : (len - off);
-        sp_err_t se = sp_term_send(data + off, (uint16_t)chunk, seq);
+        sp_err_t se = sp_fsm_term_send(data + off, (uint16_t)chunk);
         if (se != SP_OK) {
             HLOGW(TAG, "Send chunk off=%u len=%u failed: %d",
                   (unsigned)off, (unsigned)chunk, (int)se);
             return false;
         }
-        seq = term_input_series_next_(seq);
 
         if (g_log_cb) {
             ui_log_can_chunk_("TX", data + off, (uint16_t)chunk);
@@ -966,4 +1067,14 @@ bool protocol_handler_send_ascii(const uint8_t *data, size_t len)
     buffer_manager_put_output("\r\n", 2);
 #endif
     return true;
+}
+
+
+void protocol_handler_get_antenna_status(protocol_antenna_status_t *out)
+{
+    if(!out) return;
+    sp_fsm_get_antenna_status(out);
+    if(!g_handler_ready) {
+        out->online=false; out->signal_valid=false; out->position_fresh=false;
+    }
 }

@@ -98,19 +98,6 @@
 #define WIFI_UDP_NMEA_ENABLED 1
 #define WIFI_UDP_NMEA_PORT 10110
 
-/* Public NMEA 2000 identity placeholders.
- * Assign a registered manufacturer code and a unique device ID/serial before
- * deploying more than one unit on the same network. */
-#ifndef NM2K_MANUFACTURER_CODE
-#define NM2K_MANUFACTURER_CODE 2046u
-#endif
-#ifndef NM2K_DEVICE_UNIQUE_ID
-#define NM2K_DEVICE_UNIQUE_ID 1u
-#endif
-#ifndef NM2K_DEVICE_SERIAL
-#define NM2K_DEVICE_SERIAL "NM2K0001"
-#endif
-
 #define FONT_WIDTH 8
 #define FONT_HEIGHT 8
 #define LINE_SPACING 2

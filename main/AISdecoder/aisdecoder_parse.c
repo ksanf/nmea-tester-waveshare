@@ -27,6 +27,11 @@ typedef struct {
 } ais_frag_state_t;
 
 static ais_frag_state_t s_frag;
+void aisdecoder_parse_reset(void)
+{
+    memset(&s_frag, 0, sizeof(s_frag));
+}
+
 static const char *TAG = "aisdec_parse";
 
 static int hex_value_(char c)

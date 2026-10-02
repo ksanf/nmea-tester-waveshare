@@ -13,7 +13,7 @@
 #include <stdint.h>
 
 esp_err_t serial_comm_init(uint32_t baud);
-void serial_comm_deinit(void);
+esp_err_t serial_comm_deinit(void);
 esp_err_t serial_comm_write(const char *data, size_t len);
 esp_err_t serial_comm_read(uint8_t *buf, size_t *len);
 size_t serial_comm_available(void);

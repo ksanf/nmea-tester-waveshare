@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <esp_err.h>
 
+#include "rs485/rs485_runtime.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,6 +28,11 @@ lv_obj_t *rs485_parser_create(lv_obj_t *scr_main);
 
 void rs485_parser_resume(void);
 void rs485_parser_flush_lines(void);
+/* View-only calls require the LVGL lock; they never stop the runtime. */
+void rs485_parser_view_suspend(bool suspended);
+lv_obj_t *rs485_parser_view_show(lv_obj_t *parent);
+void rs485_parser_view_destroy(void);
+
 #ifdef __cplusplus
 }
 #endif
