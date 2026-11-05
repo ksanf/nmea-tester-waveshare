@@ -480,11 +480,8 @@ esp_err_t nmea_touch_init(lv_disp_t *disp)
         return ESP_ERR_INVALID_ARG;
     }
 
+    /* app_main owns NVS recovery; touch initialization must not erase settings. */
     esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
     ESP_RETURN_ON_ERROR(ret, TAG, "NVS init failed");
 
     ESP_RETURN_ON_ERROR(waveshare_i2c_init(), TAG, "I2C init failed");

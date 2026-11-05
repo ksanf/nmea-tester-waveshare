@@ -31,9 +31,24 @@ CJSON_DIR ?= $(IDF_PATH)/components/json/cJSON
 
 CC ?= cc
 CPPFLAGS += -I$(CURDIR)/stubs -I$(PROJECT_ROOT)/main -I$(PROJECT_ROOT)/main/config
+CPPFLAGS += -I$(PROJECT_ROOT)/shared
 CFLAGS += -std=c11 -Wall -Wextra -Werror -pedantic
 
 .PHONY: all test
+
+.PHONY: test_updates
+all: $(BUILD_DIR)/test_update_format $(BUILD_DIR)/test_firmware_upload
+test: test_updates
+test_updates: $(BUILD_DIR)/test_update_format $(BUILD_DIR)/test_firmware_upload
+	$(BUILD_DIR)/test_update_format
+	$(BUILD_DIR)/test_firmware_upload
+
+$(BUILD_DIR)/test_update_format: test_update_format.c $(wildcard $(PROJECT_ROOT)/shared/*.h) | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/test_firmware_upload: test_firmware_upload.c $(PROJECT_ROOT)/main/update/firmware_update.c $(wildcard update_stubs/*.h) | $(BUILD_DIR)
+	$(CC) -I$(CURDIR)/update_stubs $(CPPFLAGS) -std=gnu11 -Wall -Wextra -Werror \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections $< -o $@
 
 all: $(PORT_ACTIVITY_TARGET) $(NMEA_TARGET) $(NMEA_WIRE_TARGET) $(HEX_TARGET) $(RX_STREAM_TARGET) $(AIS_TARGET) $(ROTATE_TARGET) $(LOG_MARKUP_TARGET) $(WEB_SESSION_TARGET) $(NAVIGATION_TARGET) $(AIS_RUNTIME_TARGET) $(CAN_RING_TARGET) $(SAILOR_TELEMETRY_TARGET) $(SAILOR_STATUS_TARGET) $(SAILOR_PAGES_TARGET) $(SAILOR_SESSION_TARGET) $(TT6006_PROFILE_TARGET) $(WEB_TEMPLATES_TARGET) $(NUMERIC_VALIDATION_TARGET) $(RTC_CLOCK_TARGET) $(CPU_CLOCK_TARGET) $(NM2K_IDENTITY_TARGET) $(TELNET_RX_TARGET) $(CAN_LINK_WORKER_TARGET) $(WIFI_MANAGER_TARGET)
 

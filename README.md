@@ -4,6 +4,22 @@ NMEA Tester is touchscreen firmware for inspecting, generating, and bridging mar
 
 The project is a practical development and service tool. It is not NMEA-certified and is not intended to replace certified navigation equipment.
 
+## Download and update
+
+Current firmware: **1.4**. The [firmware folder](firmware/README.md) contains exactly three files:
+
+- [NmeaTesterUpdater.exe](https://raw.githubusercontent.com/ksanf/nmea-tester-waveshare/main/firmware/NmeaTesterUpdater.exe) — portable Windows updater with firmware already built in;
+- [nmea-tester.bin](https://raw.githubusercontent.com/ksanf/nmea-tester-waveshare/main/firmware/nmea-tester.bin) — the ordinary ESP-IDF application image, for USB or Wi-Fi updates;
+- [README.md](firmware/README.md) — quick instructions and checksums.
+
+For a normal installation, download and run the EXE. No ZIP, Python, .NET, ESP-IDF, or installer is required. Windows 10/11 x64 are the primary targets; Windows 7 SP1 x64 is an unverified compatibility target. The updater's version is independent of the device firmware version.
+
+USB automatically detects whether the tester needs an inactive-slot update or a fresh installation/recovery. It shows the detected state and asks for confirmation before writing; no automatic backup is created. Wi-Fi updates require **Settings → Firmware update** on the tester. Reading the running version only requires Wi-Fi to be enabled and does not stop normal operation.
+
+**Older public builds, including the former `1.2.6` build label, require a first USB installation** because they use the old factory partition layout. They are not OTA-capable releases in the current numbering scheme. See the [update guide](docs/UPDATING.md) for migration and recovery details.
+
+This repository contains the instrument firmware source and a ready-to-run updater binary. **Windows updater source is not included.** Firmware builds do not need it. Images are unsigned; use trusted downloads and a trusted local network.
+
 ## Features
 
 | Mode | Capabilities |
@@ -16,6 +32,7 @@ The project is a practical development and service tool. It is not NMEA-certifie
 | SAILOR bridge | TT6006-style CAN service client for TT3027 antenna telemetry and terminal access; signal, serial, position, ocean, registration, protocol, and channel |
 | Wi-Fi | AP and STA modes, network scan, saved credentials, embedded HTTP/WebSocket console, Telnet, and UDP NMEA endpoints |
 | UI | 800×480 touch interface with Color, Metal, and B/W themes and 180° rotation; responsive browser interface with independent Day/Night themes |
+| Updates | USB installation/recovery, two OTA slots, Wi-Fi updates in local maintenance mode, and read-only version query during normal operation |
 
 Wi-Fi is intentionally **off after every power-on**. Its AP/STA configuration is retained in NVS, but the radio must be enabled from the main screen for each session.
 
@@ -137,6 +154,7 @@ MWD MWV VWR VWT MTW
 Other NMEA-style sentences can still appear in the log but are not converted into instrument-panel values. A checksum is optional for panel input; when present, it must be valid.
 
 AIS accepts `!AIVDM` and `!AIVDO`, including multipart payloads. The target view decodes AIS message types 1, 2, 3, 5, 18, 19, and 24.
+It holds up to 256 targets and replaces the least recently updated entry when full.
 
 ## CAN and NMEA 2000 scope
 
@@ -206,6 +224,8 @@ Default AP settings:
 | Channel | 6 |
 | Maximum AP stations | 1 |
 | Browser console | HTTP port 80; WebSocket `/ws`; one controlling session |
+| Version query | HTTP port 80, `GET /api/v1/info`; no control claim or mode change |
+| Firmware upload | HTTP port 8080; only while locally opened in **Firmware update** |
 | Telnet | TCP port 23 |
 | UDP NMEA | UDP port 10110 |
 
@@ -231,6 +251,7 @@ Pinned managed components include:
 | ESP LCD Touch GT911 | 1.1.3 |
 
 Node.js and npm are not required to build or run the firmware. CMake compresses the embedded web page with the ESP-IDF Python interpreter.
+These prerequisites are for building the device firmware from source, not for using the downloaded Windows updater.
 
 ## Get the source
 
@@ -247,8 +268,22 @@ Open a shell in the repository and activate ESP-IDF:
 
 ```sh
 . /path/to/esp-idf-v5.5/export.sh
-idf.py build
+idf.py reconfigure build
 ```
+
+When upgrading an existing development checkout with an old `sdkconfig`, enable
+`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` and select `partitions.csv`, or generate
+a fresh configuration in a separate build directory:
+
+```sh
+idf.py -B build_v14 -D SDKCONFIG="$PWD/build_v14/sdkconfig" build
+```
+
+The application BIN is `build/nmea-tester.bin` (or `build_v14/nmea-tester.bin`
+for the separate build). A compatible image can be selected directly with
+**Browse** in the updater; no wrapping script or custom file format is required.
+`VERSION` is the single firmware version source, using tenths: `1.4`, `1.5`, …,
+`1.9`, `2.0`. The NMEA 0183 version profiles are a separate protocol setting.
 
 As a convenience, `source ./run-esp.sh` locates a configured ESP-IDF checkout,
 selects `/dev/ttyACM0` unless `ESPPORT` is already set, and enters the project
@@ -277,6 +312,10 @@ make monitor
 ```
 
 `make flash` uses a 921600 baud upload rate. The serial monitor runs at 115200 baud.
+
+`idf.py flash` is a developer installation path: it rewrites the bootloader,
+partition table and initial OTA selection as well as the application. Use the
+Windows updater for normal inactive-slot updates that retain the fallback image.
 
 ### USB pass-through to WSL
 
@@ -316,9 +355,9 @@ For a fresh checkout without an active ESP-IDF environment, provide its path:
 make -C tests/host test IDF_PATH=/path/to/esp-idf-v5.5
 ```
 
-The suite uses the same cJSON source as the firmware and exercises NMEA/AIS,
+The 27 test executables use the same cJSON source as the firmware and exercise NMEA/AIS,
 web ownership and templates, CAN/NDP telemetry, Telnet fragmentation, Wi-Fi
-storage failures, and clock fallback. See the [host test guide](tests/host/README.md)
+storage failures, clock fallback, image validation and firmware upload failures. See the [host test guide](tests/host/README.md)
 for dependencies and coverage.
 
 Optional browser checks use real Chromium with simulated device messages:
@@ -346,7 +385,8 @@ power-loss, and long-duration hardware testing.
 - `main/config/memory_config.h` — internal RAM versus PSRAM placement.
 - `main/config/config_logs.h` — compile-time diagnostic logging switches.
 - `sdkconfig.defaults` — ESP32-S3, flash, PSRAM, USB console, LVGL, and FreeRTOS defaults.
-- `partitions.csv` — NVS, factory application, and SPIFFS partition layout.
+- `VERSION` — firmware release number in tenths.
+- `partitions.csv` — NVS, two 6 MiB OTA applications, OTA selection, and storage.
 
 Large UI and monitoring buffers are placed in PSRAM, while latency-sensitive transport state stays in internal memory. The PCF85063 RTC is the primary source for generated GPS date/time fields. Valid RTC readings and accepted time edits synchronize the CPU fallback, which continues while RTC reads fail. If no valid time source exists, the clock does not publish a fabricated date. The CPU fallback cannot recover time elapsed while the board had no power.
 
@@ -357,6 +397,7 @@ main/
 ├── app_main.c                 Startup and service lifecycle
 ├── app/                       Mode lifecycle, control ownership, and navigation state
 ├── web/                       Embedded browser page, HTTP/WebSocket, and template API
+├── update/                    Local firmware-update mode, version endpoint, and boot checks
 ├── config/                    Board, memory, UI, and logging configuration
 ├── system/                    Board I/O, RTC, clock, NVS, Telnet, and UDP
 ├── wifi/                      AP/STA manager and network scanning
@@ -371,7 +412,9 @@ main/
 
 tests/host/                     Hardware-independent C tests
 tests/web/                      Browser and HTTP dispatcher regressions
-docs/                          Protocol implementation notes
+shared/                         Image metadata and update-format validation
+firmware/                       Ready-to-use EXE, application BIN, and README only
+docs/                           Update guide and protocol implementation notes
 ```
 
 ## Known scope and limitations
@@ -387,12 +430,16 @@ docs/                          Protocol implementation notes
 - Browser control is limited to one active session. Display histories and transport queues are bounded; an extended disconnect may lose old output.
 - The SAILOR bridge implements status and terminal services, not messaging, GMDSS, distress operation, or PPP/IP.
 - Network services provide no encryption or separate user authentication beyond the Wi-Fi network itself.
+- Update images are unsigned. SHA-256 detects corruption but does not authenticate the publisher.
+- Initial USB installation is not power-loss atomic; interrupted installation may require BOOT/RESET and a USB retry.
 
 ## License
 
 The original project source is released under the [MIT License](LICENSE).
 Vendored and generated portions retain their respective licenses; see
 [Third-party notices](THIRD_PARTY_NOTICES.md) for details.
+The Windows updater is supplied as a prebuilt tool without its application source;
+its bundled third-party license notice is included in `firmware/README.md`.
 
 NMEA 0183 and NMEA 2000 are referenced descriptively. This project is not
 affiliated with or certified by the National Marine Electronics Association.

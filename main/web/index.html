@@ -217,7 +217,7 @@ const n=m.nav||{},time=String(n.time||'').replace(/^(\d{2})(\d{2})(\d{2})$/,'$1:
 const values={position:coordinate(n.lat,n.lat_dir)+'\n'+coordinate(n.lon,n.lon_dir),utc:time||'—',date:n.date||'—',sog:fmt(n.gps_sog)+' kn / '+fmt(n.gps_cog)+'°',gyro:fmt(n.gyro_heading)+'°',log:fmt(n.log_speed)+' kn',depth:fmt(n.depth)+' m',wind:fmt(n.wind_speed)+' kn / '+fmt(n.wind_angle)+'° '+(n.wind_true?'T':'R'),temp:fmt(n.temp_c)+' °C'};
 for(const [id,node]of Object.entries(metricNodes)){const valid=!!(n.valid_fields&node.bit),stale=!!(n.stale_fields&node.bit);node.val.textContent=valid?values[id]:'—';node.el.classList.toggle('stale',!valid||stale);node.status.textContent=!valid?'No data':stale?'Stale':'Live';}
 setIdleValue('version',m.version);setIdleValue('theme',m.theme);if(!$('rotated').dataset.dirty)$('rotated').checked=m.rotated;
-$('memory').textContent='Free internal RAM: '+Math.round(m.internal_free/1024)+' KiB · minimum free: '+Math.round(m.internal_min/1024)+' KiB · PSRAM: '+(m.psram_free/1048576).toFixed(2)+' MiB';
+$('memory').textContent=(m.firmware_version?'Firmware '+m.firmware_version+' · ':'')+'Free internal RAM: '+Math.round(m.internal_free/1024)+' KiB · minimum free: '+Math.round(m.internal_min/1024)+' KiB · PSRAM: '+(m.psram_free/1048576).toFixed(2)+' MiB';
 $('networkStatus').textContent=(m.wifi_mode===0?'Access point':'Wi-Fi client')+' · IP '+m.ip;
 $('terminalStatus').textContent=m.mode==='sailor'?(m.terminal_ready?'Terminal ready':'Establishing connection…')+' · dropped '+(m.terminal_dropped||0)+' bytes':'Start SAILOR mode';
 renderChrome();confirmModeTransition();if(hexChanged&&currentTab==='rx485')showLog();if(changed||first)requestTab();

@@ -12,6 +12,7 @@
 #include "ui/screens/screen_wifi.h"
 #include "config/config_nmea_tester.h"
 #include "nmea_editor/nmea_version.h"
+#include "app/app_controller.h"
 
 #include <esp_app_desc.h>
 #include <esp_idf_version.h>
@@ -112,6 +113,12 @@ static void wifi_settings_cb_(lv_event_t *e)
 {
     (void)e;
     screen_wifi_show(NULL);
+}
+
+static void update_cb_(lv_event_t *e)
+{
+    (void)e;
+    (void)app_controller_local_update();
 }
 
 static void about_back_cb_(lv_event_t *e)
@@ -389,6 +396,9 @@ void screen_settings_show(lv_obj_t *parent) {
         ui_theme_accent_hex(CLR_ABOUT),
         on_about_pressed,
         NULL, FONT_BTN);
+    dialog_ui_create_button(body, action_x, about_y + BTN_H + BTN_SPACE,
+        BTN_W, BTN_H, "Firmware update", ui_theme_accent_hex(0x278C74),
+        update_cb_, NULL, FONT_BTN);
     lv_scr_load(scr_settings);
     ESP_LOGI(TAG, "Settings screen loaded");
 }

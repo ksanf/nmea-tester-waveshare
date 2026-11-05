@@ -8,3 +8,6 @@
 *.csv text eol=lf
 CMakeLists.txt text eol=lf
 Makefile text eol=lf
+
+*.exe binary
+*.bin binary

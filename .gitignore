@@ -15,6 +15,12 @@ managed_components/
 *.map
 *.hex
 
+# User downloads: keep only the updater, application BIN, and English guide.
+/firmware/*
+!/firmware/NmeaTesterUpdater.exe
+!/firmware/nmea-tester.bin
+!/firmware/README.md
+
 # C/C++ build intermediates
 *.d
 *.o

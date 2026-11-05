@@ -1,5 +1,7 @@
 #include "web/web_server.h"
 #include "app/app_controller.h"
+#include "update/firmware_info.h"
+#include "update_format.h"
 #include "esp_http_server.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
@@ -250,6 +252,7 @@ esp_err_t web_server_start(void) {
     s_outgoing = xQueueCreate(WEB_PENDING_LIMIT, sizeof(outgoing_t *));
     if (!s_outgoing) return ESP_ERR_NO_MEM;
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.server_port = NMEA_INFO_PORT;
     cfg.stack_size = 6144; cfg.max_open_sockets = WEB_PEERS;
     cfg.max_uri_handlers = 4; cfg.lru_purge_enable = false;
     cfg.recv_wait_timeout = 2; cfg.send_wait_timeout = 1;
@@ -262,8 +265,10 @@ esp_err_t web_server_start(void) {
     }
     atomic_store_explicit(&s_dispatch_task, dispatcher, memory_order_release);
     const httpd_uri_t index = { .uri = "/", .method = HTTP_GET, .handler = index_ };
+    const httpd_uri_t info = { .uri = "/api/v1/info", .method = HTTP_GET, .handler = firmware_info_http_handler };
     const httpd_uri_t ws = { .uri = "/ws", .method = HTTP_GET, .handler = websocket_, .is_websocket = true };
     err = httpd_register_uri_handler(s_server, &index);
+    if (err == ESP_OK) err = httpd_register_uri_handler(s_server, &info);
     if (err == ESP_OK) err = httpd_register_uri_handler(s_server, &ws);
     if (err != ESP_OK) { cleanup_startup_(); return err; }
     atomic_store_explicit(&s_ready, true, memory_order_release);

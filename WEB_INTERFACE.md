@@ -17,6 +17,21 @@ In STA mode the address appears after DHCP completes. If the connection is lost,
 the Wi-Fi button shows the connection state instead of keeping an old address.
 Opening the page alone does not take control or start an operating mode.
 
+## Firmware version and maintenance mode
+
+The Settings status line shows the firmware release number, separately from the
+NMEA 0183 formatting profile. `GET /api/v1/info` on the normal HTTP port 80 also
+reports the running version, board and OTA slot while Wi-Fi is enabled. It is
+read-only: no ownership claim, controller command, mode change, or flash write.
+
+Firmware upload is deliberately separate. Return control to the touchscreen,
+then open **Settings → Firmware update** locally. This stops the operating mode
+and starts the upload service on port 8080. Browser control commands are rejected
+while update mode is active. The normal browser page is not an updater.
+After a successful update, the device restarts with Wi-Fi off. Enable it again
+to read the running version; opening maintenance mode again is unnecessary.
+See [Updating the tester](docs/UPDATING.md).
+
 HTTP uses port 80; the page communicates with the device through WebSocket
 `/ws`. The console is intended for a trusted local network. These connections
 are unencrypted and have no separate user login. Change the default AP password

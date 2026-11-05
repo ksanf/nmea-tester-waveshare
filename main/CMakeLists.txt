@@ -2,6 +2,9 @@ idf_component_register(
     SRCS
         # Application entry point
         app_main.c
+        update/firmware_update.c
+        update/firmware_info.c
+        update/image_metadata.c
         app/app_controller.c
         app/navigation_model.c
         web/web_session.c
@@ -114,6 +117,7 @@ idf_component_register(
 
     INCLUDE_DIRS
         .
+        ../shared
         config
         system
         touch
@@ -140,10 +144,18 @@ idf_component_register(
         esp_netif
         esp_wifi
         esp_timer
+        mbedtls
         esp_app_format
+        app_update
         esp_http_server
         json
 )
+
+execute_process(COMMAND git rev-parse --short=12 HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE nmea_source_commit OUTPUT_STRIP_TRAILING_WHITESPACE)
+target_compile_definitions(${COMPONENT_LIB} PRIVATE NMEA_SOURCE_COMMIT="${nmea_source_commit}")
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u nmea_image_metadata")
 
 # Generate a deterministic gzip asset in the build tree, then embed it in flash.
 # RENAME_TO keeps the linker ABI stable regardless of the source/build paths.

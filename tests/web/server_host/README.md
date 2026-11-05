@@ -21,6 +21,11 @@ FreeRTOS/HTTPD substitutes and its real public header. It checks:
 - close priority and retained connection state;
 - logical connection identity after file-descriptor reuse;
 - cleanup and retry behavior when platform API calls fail.
+- the real read-only `/api/v1/info` handler during active controller work,
+  update mode off, update busy, and failure to resolve a running partition.
+
+The version-query checks also assert that the handler neither submits a
+controller command nor opens update mode or changes the OTA boot selection.
 
 These deterministic substitutes do not model network behavior, ESP-IDF's
 internal UDP control mailbox, startup failures, or concurrent FreeRTOS task

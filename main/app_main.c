@@ -38,6 +38,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "update/firmware_update.h"
 #include <stdio.h>
 
 /* Module log tag */
@@ -54,6 +55,8 @@ static esp_err_t nvs_init_with_recovery_(void)
 
     if (err == ESP_ERR_NVS_NO_FREE_PAGES ||
         err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        /* Pending OTA must never erase settings needed by the previous image. */
+        if (firmware_update_pending_boot()) return err;
         ESP_LOGW(TAG, "NVS partition needs recovery: %s", esp_err_to_name(err));
         err = nvs_flash_erase();
         if (err != ESP_OK) return err;
@@ -265,6 +268,7 @@ static void interface_power_init_(void)
 
 void app_main(void)
 {
+    firmware_update_start_boot_guard();
     ESP_LOGW(TAG, "Starting NMEA-Tester ...");
     interface_power_init_();
 
@@ -335,8 +339,9 @@ void app_main(void)
     }
     /* The HTTP listener stays available across AP/STA/off transitions. netif
      * is initialized even when the saved Wi-Fi preference is disabled. */
+    esp_err_t web_err = net_err;
     if (net_err == ESP_OK) {
-        esp_err_t web_err = web_server_start();
+        web_err = web_server_start();
         if (web_err != ESP_OK) {
             ESP_LOGW(TAG, "Web server start failed: %s", esp_err_to_name(web_err));
         }
@@ -360,6 +365,7 @@ void app_main(void)
 #endif
 
     ESP_LOGW(TAG, "System initialized and running.");
+    firmware_update_boot_check(touch_err == ESP_OK && net_err == ESP_OK && web_err == ESP_OK);
     // Prevent main task from exiting
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(10000));

@@ -14,6 +14,8 @@ esp_err_t app_controller_init(void);
 bool app_controller_local_start(app_mode_t mode);
 bool app_controller_local_stop(void);
 bool app_controller_is_web(void);
+bool app_controller_local_update(void);
+bool app_controller_healthy(void);
 /* The LCD escape path has priority over queued remote commands. */
 void app_controller_return_local(void);
 bool app_controller_web_submit(int fd, const char *json, size_t len);

@@ -1,4 +1,6 @@
 #include "app/app_controller.h"
+#include "update/firmware_update.h"
+#include "esp_app_desc.h"
 #include "app/navigation_model.h"
 #include "web/web_session.h"
 #include "web/web_server.h"
@@ -44,13 +46,14 @@
 
 #define COMMANDS 12
 #define RESPONSE_CACHE 32
-typedef enum { CMD_REMOTE, CMD_LOCAL_MODE, CMD_LOCAL_BAUD, CMD_LOCAL_N2K_SPEED, CMD_LOCAL_SAILOR_BAUD, CMD_SCAN_RESULT } command_kind_t;
+typedef enum { CMD_REMOTE, CMD_LOCAL_MODE, CMD_LOCAL_BAUD, CMD_LOCAL_N2K_SPEED, CMD_LOCAL_SAILOR_BAUD, CMD_SCAN_RESULT, CMD_LOCAL_UPDATE } command_kind_t;
 typedef struct { command_kind_t kind; int peer; uint32_t epoch; uint32_t value; bool local_at_submit; char *text; } command_t;
 typedef struct { uint32_t id, hash; esp_err_t result; } reply_t;
 static QueueHandle_t s_commands;
 static web_session_t s_session;
 static atomic_bool s_web, s_return_requested, s_scan_busy;
 static atomic_uint s_epoch;
+static atomic_uint s_heartbeat;
 static atomic_int s_peer, s_lost_peer;
 static reply_t s_replies[RESPONSE_CACHE];
 static uint32_t s_highest_id, s_reply_pos;
@@ -231,6 +234,7 @@ static void state_(int peer) {
     cJSON_AddNumberToObject(j,"internal_largest",heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
     cJSON_AddNumberToObject(j,"psram_free",heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(j,"version",nmea_version_get());
+    cJSON_AddStringToObject(j,"firmware_version",esp_app_get_description()->version);
     cJSON_AddNumberToObject(j,"theme",ui_theme_get_id());
     cJSON_AddBoolToObject(j,"rotated",screen_orientation_is_rotated());
     char ip[20]=""; wifi_manager_get_ip_str(ip,sizeof(ip));
@@ -565,6 +569,7 @@ static esp_err_t apply_(int peer,uint32_t id,const cJSON *j) {
 }
 static uint32_t hash_(const char *text) {uint32_t h=2166136261u;while(*text)h=(h^(uint8_t)*text++)*16777619u;return h;}
 static void remote_(const command_t *command) {
+    if(firmware_update_active()) { ack_(command->peer,0,ESP_ERR_INVALID_STATE); return; }
     cJSON *j=cJSON_ParseWithOpts(command->text,NULL,true);if(!j||!cJSON_IsObject(j)){cJSON_Delete(j);ack_(command->peer,0,ESP_ERR_INVALID_ARG);return;}
     const char *op=str_(j,"op"),*token=str_(j,"token"); double raw_id;
     uint32_t id=number_(j,"id",0,2147483647,&raw_id)&&floor(raw_id)==raw_id?(uint32_t)raw_id:0;
@@ -631,6 +636,8 @@ static void remote_(const command_t *command) {
 static void controller_task_(void *arg) {
     (void)arg;
     while(true) {
+        atomic_store(&s_heartbeat,(uint32_t)now_());
+        firmware_update_tick();
         if(atomic_exchange(&s_return_requested,false)&&atomic_load(&s_web))return_local_("local_button");
         int lost_peer=atomic_exchange(&s_lost_peer,-1);
         if(lost_peer>=0)web_session_disconnect(&s_session,lost_peer);
@@ -648,10 +655,19 @@ static void controller_task_(void *arg) {
             else if(command.kind==CMD_SCAN_RESULT) {
                 if(command.epoch==s_session.generation&&command.peer==s_session.fd)
                     (void)web_server_send(command.peer,command.text,strlen(command.text));
-            } else if(!atomic_load(&s_web)&&command.epoch==atomic_load(&s_epoch)) {
+            } else if(!atomic_load(&s_web)&&!firmware_update_active()&&command.epoch==atomic_load(&s_epoch)) {
                 esp_err_t err=ESP_OK;
                 s_mode=detect_mode_();
-                if(command.kind==CMD_LOCAL_MODE)err=switch_mode_((app_mode_t)command.value);
+                if(command.kind==CMD_LOCAL_UPDATE) {
+                    err=switch_mode_(APP_MODE_IDLE);
+                    if(err==ESP_OK)err=firmware_update_open();
+                    if(err!=ESP_OK && lvgl_port_lock(-1)) {
+                        lv_obj_t *box=lv_msgbox_create(NULL,"Update unavailable",
+                            "Enable Wi-Fi and wait for an IP address first.\nIf it is already connected, check the device log.",NULL,true);
+                        lv_obj_center(box); lvgl_port_unlock();
+                    }
+                }
+                else if(command.kind==CMD_LOCAL_MODE)err=switch_mode_((app_mode_t)command.value);
                 else if(command.kind==CMD_LOCAL_N2K_SPEED) {
                     if(s_mode!=APP_MODE_N2K)err=ESP_ERR_INVALID_STATE;
                     else if(!nm2k_runtime_stop())err=ESP_ERR_TIMEOUT;
@@ -669,11 +685,13 @@ static void controller_task_(void *arg) {
     }
 }
 static bool enqueue_local_(command_kind_t kind,uint32_t value) {
-    if(!s_commands||atomic_load(&s_web))return false;
+    if(!s_commands||atomic_load(&s_web)||firmware_update_active())return false;
     command_t command={.kind=kind,.value=value,.epoch=atomic_load(&s_epoch)};
     return xQueueSend(s_commands,&command,0)==pdTRUE;
 }
 bool app_controller_local_start(app_mode_t mode){return enqueue_local_(CMD_LOCAL_MODE,mode);}
+bool app_controller_local_update(void){return enqueue_local_(CMD_LOCAL_UPDATE,0);}
+bool app_controller_healthy(void){return s_commands && (uint32_t)((uint32_t)now_()-atomic_load(&s_heartbeat))<2000u;}
 bool app_controller_local_stop(void){return app_controller_local_start(APP_MODE_IDLE);}
 bool app_controller_local_baud(uint32_t baud){return enqueue_local_(CMD_LOCAL_BAUD,baud);}
 bool app_controller_local_n2k_speed(uint32_t speed){return enqueue_local_(CMD_LOCAL_N2K_SPEED,speed);}
@@ -684,7 +702,7 @@ void app_controller_return_local(void) {
     atomic_fetch_add(&s_epoch,1);
 }
 bool app_controller_web_submit(int peer,const char *json,size_t len) {
-    if(!s_commands||!json||!len||len>4096)return false;
+    if(!s_commands||!json||!len||len>4096||firmware_update_active())return false;
     /* Bound nesting before cJSON recursion, accounting for escaped strings. */
     int depth=0;bool quoted=false,escaped=false;
     for(size_t i=0;i<len;++i){char c=json[i];if(quoted){if(escaped)escaped=false;else if(c=='\\')escaped=true;else if(c=='"')quoted=false;}

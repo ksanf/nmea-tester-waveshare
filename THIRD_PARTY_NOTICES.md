@@ -33,7 +33,16 @@ variant of the built-in Unscii font shipped with LVGL 8.4.0. LVGL is licensed
 under the MIT license. The generated file retains an MIT SPDX identifier and
 documents the local transformation.
 
-## Managed components
+## Prebuilt Windows updater
+
+`firmware/NmeaTesterUpdater.exe` contains the Espressif **esp-serial-flasher**
+library (Apache License 2.0), revision `ddf3cdd8fa87f3d26b42f1b8ad94bbbb67745f50`.
+Its application source and build tools are not included in this public firmware
+repository. The complete Apache license text is also included in the download
+folder's README so that the three-file distribution keeps its license notice.
+Upstream library: https://github.com/espressif/esp-serial-flasher.
+
+## Managed firmware components
 
 ESP-IDF Component Manager downloads the following dependencies during
 configuration; their source is not vendored in this repository:

@@ -36,6 +36,8 @@ make -C tests/host test IDF_PATH=/path/to/esp-idf-v5.5 BUILD_DIR=/tmp/nmea-host-
 
 ## Coverage
 
+The suite currently builds and runs 27 test executables.
+
 | Area | Checks |
 |---|---|
 | NMEA output | Sentence bodies, XOR checksums, version profiles, wire-length limits, CR/LF, and ROT heading motion |
@@ -50,6 +52,8 @@ make -C tests/host test IDF_PATH=/path/to/esp-idf-v5.5 BUILD_DIR=/tmp/nmea-host-
 | Telnet | Fragmentation, immediate CR delivery, IAC negotiation, and bounded in-place output, including CR followed by 128 bytes |
 | Wi-Fi persistence | Legacy settings, grouped saves, open/set/commit failures, and RAM/radio behavior |
 | RTC fallback | RTC and CPU-only builds, UTC/calendar validation, read failure/recovery, and concurrent time edits |
+| Update format | Version tenths, board/layout metadata, image bounds, CRC and OTA selector helpers |
+| Firmware upload | Actual upload handler, fragmented input, invalid size/metadata/hash, flash errors, timeout/cancel, boot selection, and pending-boot protection |
 
 The template suite uses the production template defaults, snapshot/patch code,
 and cJSON. Its stubs supply FreeRTOS locks/timers, NVS, the clock boundary, and
@@ -63,6 +67,12 @@ values, so relying on a flag that the receive API does not populate is detected.
 The Wi-Fi suite compiles the real manager and injects failures at each storage
 stage. Its NVS model can persist a write before returning a commit failure;
 tests do not assume that failed commit means storage was rolled back.
+
+The upload suite compiles `main/update/firmware_update.c` with isolated HTTP,
+flash, task, and hashing substitutes. It checks that rejected or interrupted
+uploads do not select a new boot image. It does not simulate the ESP32 ROM USB
+loader or prove recovery after a physical power loss. Windows updater sources
+and native updater tests are not part of this public firmware repository.
 
 ## Other suites and limits
 
